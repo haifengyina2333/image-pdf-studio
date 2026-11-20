@@ -133,6 +133,10 @@ function SliderRow({
 }
 
 export function ImageWorkspace() {
+  const isMac = typeof navigator !== 'undefined' && /mac|iphone|ipad/i.test(navigator.platform || navigator.userAgent);
+  const pasteKey = isMac ? '⌘V' : 'Ctrl+V';
+  const copyKey = isMac ? '⌘⇧C' : 'Ctrl+Shift+C';
+  const saveKey = isMac ? '⌘S' : 'Ctrl+S';
   const tool = useImageStore((s) => s.tool);
   const items = useImageStore((s) => s.items);
   const selectedId = useImageStore((s) => s.selectedId);
@@ -682,7 +686,7 @@ export function ImageWorkspace() {
 
         {!items.length && (
           <div className="py-10 text-center text-[13px]" style={{ color: 'var(--muted)' }}>
-            拖入图片或 ⌘V 粘贴
+            拖入图片或 {pasteKey} 粘贴
           </div>
         )}
       </div>
@@ -715,7 +719,7 @@ export function ImageWorkspace() {
         导入图片开始处理
       </h2>
       <p className="mt-1.5 max-w-sm text-[13px]" style={{ color: 'var(--muted)' }}>
-        支持 JPG、PNG、WebP、HEIC / HEIF；拖入窗口或直接按 ⌘V / Ctrl+V 粘贴截图。
+        支持 JPG、PNG、WebP、HEIC / HEIF；拖入窗口或直接按 {pasteKey} 粘贴截图。
       </p>
       <button
         type="button"
@@ -1925,7 +1929,7 @@ export function ImageWorkspace() {
             type="button"
             onClick={copyCurrentPng}
             disabled={!items.length || busy}
-            title="复制图片到剪贴板（可在设置页切换 PNG / JPG 与尺寸上限）"
+            title={`复制图片到剪贴板（${copyKey}，可在设置页切换 PNG / JPG 与尺寸上限）`}
             className="studio-secondary-btn inline-flex h-10 shrink-0 items-center justify-center gap-1.5 rounded-full border px-3.5 text-[13px] font-semibold disabled:opacity-40"
           >
             <Copy className="h-3.5 w-3.5" />
@@ -1936,6 +1940,7 @@ export function ImageWorkspace() {
         <button
           type="button"
           onClick={exportCurrent}
+          title={`导出当前文件（${saveKey}）`}
           disabled={
             !items.length ||
             busy ||

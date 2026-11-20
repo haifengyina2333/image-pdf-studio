@@ -18,6 +18,8 @@ import { ImageToolId, useImageStore } from '../stores/useImageStore';
 import { PdfToolId, usePdfStore } from '../stores/usePdfStore';
 
 export function HomeView() {
+  const isMac = typeof navigator !== 'undefined' && /mac|iphone|ipad/i.test(navigator.platform || navigator.userAgent);
+  const pasteKey = isMac ? '⌘V' : 'Ctrl+V';
   const setRoute = useAppStore((s) => s.setRoute);
   const setImageTool = useImageStore((s) => s.setTool);
   const setPdfTool = usePdfStore((s) => s.setTool);
@@ -68,7 +70,7 @@ export function HomeView() {
             className="rounded-md border px-1.5 py-0.5 font-mono text-[13px] font-semibold"
             style={{ background: 'var(--bg-subtle)', borderColor: 'var(--line-strong)', color: 'var(--ink-2)' }}
           >
-            ⌘V
+            {pasteKey}
           </kbd>{' '}
           粘贴截图立即开始。
         </p>

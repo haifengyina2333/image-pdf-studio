@@ -5,9 +5,9 @@ import { fileURLToPath } from 'node:url';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const RELEASE_DIR = resolve(ROOT, 'release');
-const SINGLE_OUT = resolve(RELEASE_DIR, '图片PDF工作台-v2.0.1-离线单文件.html');
+const SINGLE_OUT = resolve(RELEASE_DIR, '图片PDF工作台-v2.0.2-离线单文件.html');
 const WEB_DIR = resolve(RELEASE_DIR, 'web');
-const WEB_ZIP = resolve(RELEASE_DIR, '图片PDF工作台-v2.0.1-Web部署包.zip');
+const WEB_ZIP = resolve(RELEASE_DIR, '图片PDF工作台-v2.0.2-Web部署包.zip');
 
 const mode = process.argv[2] || 'all'; // 'all' | 'web' | 'single'
 
@@ -60,7 +60,7 @@ if (mode === 'all' || mode === 'single') {
 
   const b64 = (absPath) => readFileSync(absPath).toString('base64');
   const assets = {
-    pdfWorker: b64(resolve(ROOT, 'node_modules/pdfjs-dist/build/pdf.worker.min.mjs')),
+    pdfWorker: b64(resolve(ROOT, 'node_modules/pdfjs-dist/legacy/build/pdf.worker.min.mjs')),
     mediapipeLoader: b64(resolve(ROOT, 'public/mediapipe/vision_wasm_internal.js')),
     mediapipeWasm: b64(resolve(ROOT, 'public/mediapipe/vision_wasm_internal.wasm')),
     faceDetectorModel: b64(resolve(ROOT, 'public/mediapipe/blaze_face_full_range.tflite')),

@@ -81,6 +81,10 @@ export function App() {
       if (curRoute === 'image') {
         const imgState = useImageStore.getState();
         if (mod && e.key.toLowerCase() === 's') {
+          if (e.repeat) {
+            e.preventDefault();
+            return;
+          }
           if (imgState.items.length) {
             e.preventDefault();
             imgState.exportCurrent();
@@ -88,6 +92,10 @@ export function App() {
           return;
         }
         if (mod && e.shiftKey && e.key.toLowerCase() === 'c') {
+          if (e.repeat) {
+            e.preventDefault();
+            return;
+          }
           if (imgState.items.length) {
             e.preventDefault();
             imgState.copyCurrentPng();

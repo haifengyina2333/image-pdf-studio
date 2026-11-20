@@ -556,20 +556,23 @@ export const ensurePdfJs = async () => {
   if (window.ToolboxPDFJS) return window.ToolboxPDFJS;
   if (!pdfJsPromise) {
     pdfJsPromise = (async () => {
-      const pdfjsLib = await import('pdfjs-dist');
+      const pdfjsLib = await import('pdfjs-dist/legacy/build/pdf.mjs');
       let workerSrc = '';
       if (window.__SINGLE_FILE_ASSETS__?.pdfWorker) {
         const workerBytes = decodeBase64ToBytes(window.__SINGLE_FILE_ASSETS__.pdfWorker);
         workerSrc = URL.createObjectURL(new Blob([workerBytes as BlobPart], { type: 'text/javascript' }));
       } else {
-        const workerMod = await import('pdfjs-dist/build/pdf.worker.min.mjs?url');
+        const workerMod = await import('pdfjs-dist/legacy/build/pdf.worker.min.mjs?url');
         workerSrc = workerMod.default;
       }
       pdfWorkerUrl = workerSrc;
       pdfjsLib.GlobalWorkerOptions.workerSrc = workerSrc;
       window.ToolboxPDFJS = pdfjsLib;
       return pdfjsLib;
-    })();
+    })().catch((err) => {
+      pdfJsPromise = null;
+      throw err;
+    });
   }
   return pdfJsPromise;
 };
@@ -577,10 +580,15 @@ export const ensurePdfJs = async () => {
 export const ensurePdfLib = async () => {
   if (window.ToolboxPDFLib) return window.ToolboxPDFLib;
   if (!pdfLibPromise) {
-    pdfLibPromise = import('pdf-lib').then(({ PDFDocument, degrees, rgb }) => {
-      window.ToolboxPDFLib = { PDFDocument, degrees, rgb };
-      return window.ToolboxPDFLib;
-    });
+    pdfLibPromise = import('pdf-lib')
+      .then(({ PDFDocument, degrees, rgb }) => {
+        window.ToolboxPDFLib = { PDFDocument, degrees, rgb };
+        return window.ToolboxPDFLib;
+      })
+      .catch((err) => {
+        pdfLibPromise = null;
+        throw err;
+      });
   }
   return pdfLibPromise;
 };
@@ -588,11 +596,16 @@ export const ensurePdfLib = async () => {
 export const ensureHeic = async () => {
   if (typeof window.heic2any === 'function') return window.heic2any;
   if (!heicPromise) {
-    heicPromise = import('heic2any').then((mod) => {
-      const fn = (mod as { default?: unknown }).default ?? mod;
-      window.heic2any = fn;
-      return fn;
-    });
+    heicPromise = import('heic2any')
+      .then((mod) => {
+        const fn = (mod as { default?: unknown }).default ?? mod;
+        window.heic2any = fn;
+        return fn;
+      })
+      .catch((err) => {
+        heicPromise = null;
+        throw err;
+      });
   }
   return heicPromise;
 };
@@ -602,10 +615,15 @@ export const ensureMediaPipe = async () => {
     return window.ToolboxMediaPipe;
   }
   if (!mediaPipePromise) {
-    mediaPipePromise = import('@mediapipe/tasks-vision').then((mod) => {
-      window.ToolboxMediaPipe = { FaceDetector: mod.FaceDetector, FaceLandmarker: mod.FaceLandmarker };
-      return window.ToolboxMediaPipe;
-    });
+    mediaPipePromise = import('@mediapipe/tasks-vision')
+      .then((mod) => {
+        window.ToolboxMediaPipe = { FaceDetector: mod.FaceDetector, FaceLandmarker: mod.FaceLandmarker };
+        return window.ToolboxMediaPipe;
+      })
+      .catch((err) => {
+        mediaPipePromise = null;
+        throw err;
+      });
   }
   return mediaPipePromise;
 };

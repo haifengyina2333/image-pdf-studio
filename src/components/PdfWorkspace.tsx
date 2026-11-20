@@ -263,8 +263,9 @@ export function PdfWorkspace() {
       const cw = w / cols;
       const ch = h / rows;
       for (let r = -1; r <= rows; r += 1) {
+        const pdfRow = rows - 1 - r;
         for (let c = -1; c <= cols; c += 1) {
-          drawAt((c + 0.5 + (r % 2 ? 0.25 : 0)) * cw, (r + 0.5) * ch);
+          drawAt((c + 0.5 + (pdfRow % 2 ? 0.25 : 0)) * cw, (r + 0.5) * ch);
         }
       }
     } else {
@@ -552,6 +553,7 @@ export function PdfWorkspace() {
         <div
           className="flex flex-1 items-center justify-center overflow-hidden px-5 pt-4 pb-14"
           onWheel={(e) => {
+            if (e.deltaY === 0) return;
             e.preventDefault();
             setZoom((z) => {
               const next = Math.max(0.5, Math.min(3, Number((z + (e.deltaY < 0 ? 0.12 : -0.12)).toFixed(2))));

@@ -60,7 +60,7 @@
   };
 
   const drawMosaic = (ctx, source, box, strength, outputWidth, outputHeight) => {
-    const tile = Math.max(2, Math.round(strength));
+    const tile = Math.max(2, Math.round(strength * Math.max(outputWidth, outputHeight) / 1200));
     const sample = document.createElement('canvas');
     sample.width = Math.max(1, Math.ceil(box.width / tile));
     sample.height = Math.max(1, Math.ceil(box.height / tile));

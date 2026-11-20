@@ -301,7 +301,7 @@ export const usePdfStore = create<PdfState>((set, get) => ({
         sessions: next,
         pagePlans: nextPlans,
         activeId: state.activeId === id ? next[0]?.id ?? null : state.activeId,
-        currentPage: 1
+        currentPage: state.activeId === id ? 1 : state.currentPage
       };
     });
   },

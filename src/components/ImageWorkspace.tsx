@@ -279,7 +279,7 @@ export function ImageWorkspace() {
     try {
       const layout = getEngine().ImageStitcher.layoutFor(
         items.map((i) => i.decoded),
-        stitch
+        { ...stitch, rowPattern: stitch.mode === 'grid' ? stitch.rowPattern : '' }
       );
       return { layout, error: null };
     } catch (err) {
@@ -735,6 +735,7 @@ export function ImageWorkspace() {
       <div
         className="flex flex-1 items-center justify-center overflow-hidden px-5 pt-4 pb-14"
         onWheel={(e) => {
+          if (e.deltaY === 0) return;
           e.preventDefault();
           setZoom((z) => {
             const next = Math.max(0.4, Math.min(3, Number((z + (e.deltaY < 0 ? 0.12 : -0.12)).toFixed(2))));
@@ -1020,7 +1021,7 @@ export function ImageWorkspace() {
           </button>
           <button
             type="button"
-            onClick={() => setZoom((z) => Math.min(2.5, Number((z + 0.2).toFixed(2))))}
+            onClick={() => setZoom((z) => Math.min(3, Number((z + 0.2).toFixed(2))))}
             aria-label="放大"
             className="studio-icon-btn grid h-6 w-6 place-items-center rounded-full border border-transparent"
           >
@@ -1683,7 +1684,16 @@ export function ImageWorkspace() {
                 <button
                   key={sw}
                   type="button"
-                  onClick={() => patchStitch({ background: sw })}
+                  onClick={() =>
+                    patchStitch({
+                      background: sw,
+                      ...(sw === '#0f172a' && stitch.headerColor.toLowerCase() === '#0f172a'
+                        ? { headerColor: '#f8fafc' }
+                        : sw !== '#0f172a' && stitch.headerColor.toLowerCase() === '#f8fafc'
+                          ? { headerColor: '#0f172a' }
+                          : {})
+                    })
+                  }
                   className="h-4.5 w-4.5 rounded-full border"
                   style={{
                     background: sw,
@@ -1784,6 +1794,33 @@ export function ImageWorkspace() {
                   <option value="left">文字左对齐</option>
                   <option value="center">文字居中</option>
                 </select>
+              </div>
+
+              <div className="flex items-center justify-between pt-0.5">
+                <span className="text-[12.5px] font-semibold" style={{ color: 'var(--ink-2)' }}>
+                  标题文字颜色
+                </span>
+                <div className="flex items-center gap-1.5">
+                  <input
+                    type="color"
+                    value={stitch.headerColor}
+                    onChange={(e) => patchStitch({ headerColor: e.target.value })}
+                    className="h-6 w-8 cursor-pointer rounded border p-0.5"
+                    style={{ borderColor: 'var(--line-strong)' }}
+                  />
+                  {['#0f172a', '#f8fafc', '#2563eb', '#dc2626'].map((hc) => (
+                    <button
+                      key={hc}
+                      type="button"
+                      onClick={() => patchStitch({ headerColor: hc })}
+                      className="h-4.5 w-4.5 rounded-full border"
+                      style={{
+                        background: hc,
+                        borderColor: stitch.headerColor.toLowerCase() === hc ? 'var(--accent)' : 'var(--line-strong)'
+                      }}
+                    />
+                  ))}
+                </div>
               </div>
             </div>
           </details>

@@ -183,7 +183,7 @@ interface ImageStoreState {
 
   patchWatermark: (patch: Partial<WatermarkOptions>) => void;
   loadWatermarkPresets: () => Promise<void>;
-  saveWatermarkPreset: (name: string) => Promise<void>;
+  saveWatermarkPreset: (name: string) => Promise<boolean>;
   applyWatermarkPreset: (id: string) => Promise<void>;
   deleteWatermarkPreset: (id: string) => Promise<void>;
   exportWatermarkPresets: () => Promise<void>;
@@ -339,10 +339,15 @@ const processSingleItem = async (
       return { ...res, ext: extForMime(mime) };
     }
     if (state.tool === 'crop') {
+      const activeId = state.selectedId ?? state.items[0]?.id;
+      const effectiveCrop =
+        state.crop.ratio > 0 && item.id !== activeId
+          ? engine.ImageCropper.cropForAspect(dims, state.crop.ratio)
+          : state.crop.rect;
       const res = await engine.ImageCropper.cropImage({
         file,
         dimensions: dims,
-        crop: state.crop.rect,
+        crop: effectiveCrop,
         type: mime,
         quality,
         scope,
@@ -489,6 +494,7 @@ export const useImageStore = create<ImageStoreState>((set, get) => ({
 
   selectItem: (id) =>
     set((state) => {
+      if (id === state.selectedId) return {};
       if (state.crop.ratio > 0 && id) {
         const nextItem = state.items.find((i) => i.id === id);
         if (nextItem) {
@@ -543,11 +549,18 @@ export const useImageStore = create<ImageStoreState>((set, get) => ({
       const next = state.items.filter((i) => i.id !== id);
       const nextFaces = { ...state.facesByItemId };
       delete nextFaces[id];
+      const nextSelected = state.selectedId === id ? next[0]?.id ?? null : state.selectedId;
+      const nextItem = next.find((i) => i.id === nextSelected);
+      const nextCrop =
+        state.selectedId === id && state.crop.ratio > 0 && nextItem
+          ? { ...state.crop, rect: getEngine().ImageCropper.cropForAspect(nextItem.decoded.dimensions, state.crop.ratio) }
+          : state.crop;
       return {
         items: next,
         facesByItemId: nextFaces,
         selectedFaceId: null,
-        selectedId: state.selectedId === id ? next[0]?.id ?? null : state.selectedId
+        selectedId: nextSelected,
+        crop: nextCrop
       };
     });
   },
@@ -602,8 +615,10 @@ export const useImageStore = create<ImageStoreState>((set, get) => ({
       const list = await getWatermarkStore().listPresets();
       set({ wmPresets: list });
       useAppStore.getState().notify(`已保存水印预设：${name.trim()}`, 'success');
+      return true;
     } catch (err) {
       useAppStore.getState().notify(err instanceof Error ? err.message : '预设保存失败', 'error');
+      return false;
     }
   },
 
@@ -828,7 +843,7 @@ export const useImageStore = create<ImageStoreState>((set, get) => ({
         : t === 'redact'
           ? { ...s.redact }
           : t === 'compress'
-            ? { ...s.compress }
+            ? { compress: { ...s.compress }, format: s.exportConfig.format, quality: s.exportConfig.quality }
             : t === 'resize'
               ? { ...s.resize }
               : t === 'transform'
@@ -888,7 +903,15 @@ export const useImageStore = create<ImageStoreState>((set, get) => ({
     delete nextUndo[t];
     if (t === 'watermark') set({ undoByTool: nextUndo, watermark: snap as WatermarkOptions });
     else if (t === 'redact') set({ undoByTool: nextUndo, redact: snap as FaceRedactionOptions });
-    else if (t === 'compress') set({ undoByTool: nextUndo, compress: snap as CompressConfig });
+    else if (t === 'compress') {
+      const cSnap = snap as { compress: CompressConfig; format: ImageExportConfig['format']; quality: number };
+      set({
+        undoByTool: nextUndo,
+        compress: cSnap.compress,
+        exportConfig: { ...s.exportConfig, format: cSnap.format, quality: cSnap.quality },
+        formatByTool: { ...s.formatByTool, compress: cSnap.format }
+      });
+    }
     else if (t === 'resize') set({ undoByTool: nextUndo, resize: snap as ResizeConfig });
     else if (t === 'transform') set({ undoByTool: nextUndo, transform: snap as TransformConfig });
     else if (t === 'crop') set({ undoByTool: nextUndo, crop: snap as CropConfig });
@@ -1085,7 +1108,12 @@ export const useImageStore = create<ImageStoreState>((set, get) => ({
           try {
             const res = await engine.ImageStitcher.stitchImages({
               images: state.items.map((i) => i.decoded),
-              options: { ...state.stitch, type: state.exportConfig.format, quality: state.exportConfig.quality },
+              options: {
+                ...state.stitch,
+                rowPattern: state.stitch.mode === 'grid' ? state.stitch.rowPattern : '',
+                type: state.exportConfig.format,
+                quality: state.exportConfig.quality
+              },
               scope,
               signal,
               onProgress: (c, t) => report(`正在拼接 ${c}/${t} 张…`, { current: c, total: t })
@@ -1203,7 +1231,12 @@ export const useImageStore = create<ImageStoreState>((set, get) => ({
           try {
             const res = await engine.ImageStitcher.stitchImages({
               images: state.items.map((i) => i.decoded),
-              options: { ...state.stitch, type: 'image/png', quality: 1 },
+              options: {
+                ...state.stitch,
+                rowPattern: state.stitch.mode === 'grid' ? state.stitch.rowPattern : '',
+                type: 'image/png',
+                quality: 1
+              },
               scope,
               signal
             });

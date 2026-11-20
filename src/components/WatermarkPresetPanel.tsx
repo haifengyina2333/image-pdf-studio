@@ -22,8 +22,8 @@ export function WatermarkPresetPanel() {
   const handleSave = async () => {
     const trimmed = name.trim();
     if (!trimmed) return;
-    await savePreset(trimmed);
-    setName('');
+    const ok = await savePreset(trimmed);
+    if (ok) setName('');
   };
 
   return (

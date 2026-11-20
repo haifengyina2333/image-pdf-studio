@@ -8,6 +8,7 @@ export default defineConfig({
   base: './',
   plugins: [react(), tailwindcss()],
   define: {
+    __OFFLINE_SINGLE_FILE__: 'true',
     'process.env.NODE_ENV': JSON.stringify('production')
   },
   build: {

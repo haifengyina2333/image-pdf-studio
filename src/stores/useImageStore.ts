@@ -43,6 +43,8 @@ export interface ImageExportConfig {
   batchZip: boolean;
 }
 
+type ToolEncoding = Pick<ImageExportConfig, 'format' | 'quality'>;
+
 export interface CompressConfig {
   profile: 'high' | 'balanced' | 'strong' | 'custom';
   maxEdge: number;
@@ -167,7 +169,7 @@ interface ImageStoreState {
   stitch: StitchOptions;
   splitConfig: ImageSplitConfig;
   exportConfig: ImageExportConfig;
-  formatByTool: Partial<Record<ImageToolId, ImageExportConfig['format']>>;
+  encodingByTool: Partial<Record<ImageToolId, ToolEncoding>>;
   undoByTool: Partial<Record<ImageToolId, unknown>>;
 
   setTool: (tool: ImageToolId) => void;
@@ -231,6 +233,33 @@ const getWatermarkStore = () => {
 let logoDisposeFn: (() => void) | null = null;
 let stickerDisposeFn: (() => void) | null = null;
 let importGeneration = 0;
+
+const encodingFor = ({ format, quality }: ToolEncoding): ToolEncoding => ({ format, quality });
+
+const switchImageTool = (state: ImageStoreState, tool: ImageToolId) => {
+  if (tool === state.tool) return {};
+  const firstEncoding: ToolEncoding = tool === 'stitch'
+    ? { format: 'image/png', quality: DEFAULT_EXPORT.quality }
+    : tool === 'compress'
+      ? { format: 'image/jpeg', quality: (getEngine().CompressionModel.profiles[state.compress.profile]?.quality ?? 82) / 100 }
+      : encodingFor(DEFAULT_EXPORT);
+  return {
+    tool,
+    encodingByTool: { ...state.encodingByTool, [state.tool]: encodingFor(state.exportConfig) },
+    exportConfig: { ...state.exportConfig, ...(state.encodingByTool[tool] ?? firstEncoding) }
+  };
+};
+
+const canStartImageOutput = (state: ImageStoreState) => {
+  if (state.tool !== 'watermark') return true;
+  try {
+    getEngine().ImageExporter.assertExportable(state.watermark);
+    return true;
+  } catch (err) {
+    useAppStore.getState().notify(err instanceof Error ? err.message : '请先上传 Logo 水印。', 'error');
+    return false;
+  }
+};
 
 const extForMime = (mime: string) => (mime === 'image/png' ? 'png' : mime === 'image/webp' ? 'webp' : 'jpg');
 
@@ -398,26 +427,10 @@ export const useImageStore = create<ImageStoreState>((set, get) => ({
   stitch: { ...DEFAULT_STITCH },
   splitConfig: { ...DEFAULT_IMAGE_SPLIT },
   exportConfig: { ...DEFAULT_EXPORT },
-  formatByTool: {},
+  encodingByTool: {},
   undoByTool: {},
 
-  setTool: (tool) =>
-    set((state) => {
-      if (tool === state.tool) return {};
-      const remembered = state.formatByTool[tool];
-      if (remembered) {
-        return { tool, exportConfig: { ...state.exportConfig, format: remembered } };
-      }
-      if (tool === 'stitch') {
-        return { tool, exportConfig: { ...state.exportConfig, format: 'image/png' } };
-      }
-      if (tool === 'compress') {
-        const profile = getEngine().CompressionModel.profiles[state.compress.profile];
-        const q = profile ? profile.quality / 100 : state.exportConfig.quality;
-        return { tool, exportConfig: { ...state.exportConfig, format: 'image/jpeg', quality: q } };
-      }
-      return { tool };
-    }),
+  setTool: (tool) => set((state) => switchImageTool(state, tool)),
 
   importFiles: async (fileList) => {
     const files = Array.from(fileList);
@@ -629,6 +642,10 @@ export const useImageStore = create<ImageStoreState>((set, get) => ({
     let logoImg: HTMLImageElement | null = get().watermark.logo;
     let logoName = get().logoName;
     let logoBlob = get().logoBlob;
+    if (snap.watermark.kind === 'image' && !snap.logo?.blob.size) {
+      useAppStore.getState().notify('这个预设缺少 Logo，请重新上传 Logo 后保存为新预设。', 'error');
+      return;
+    }
 
     if (snap.logo?.blob) {
       try {
@@ -639,9 +656,13 @@ export const useImageStore = create<ImageStoreState>((set, get) => ({
         logoImg = decoded.preview.image;
         logoName = snap.logo.name;
         logoBlob = snap.logo.blob;
-      } catch {}
+      } catch {
+        useAppStore.getState().notify('预设中的 Logo 无法读取，请重新上传后再保存。', 'error');
+        return;
+      }
     }
 
+    const encoding = { format: snap.output.format, quality: snap.output.quality / 100 };
     set((s) => ({
       logoName,
       logoBlob,
@@ -662,11 +683,9 @@ export const useImageStore = create<ImageStoreState>((set, get) => ({
         position: { ...snap.watermark.position },
         logo: snap.watermark.kind === 'image' ? logoImg : s.watermark.logo
       },
-      exportConfig: {
-        ...s.exportConfig,
-        format: snap.output.format,
-        quality: snap.output.quality / 100
-      }
+      ...(s.tool === 'watermark'
+        ? { exportConfig: { ...s.exportConfig, ...encoding } }
+        : { encodingByTool: { ...s.encodingByTool, watermark: encoding } })
     }));
     useAppStore.getState().notify(`已载入预设：${record.name}`, 'success');
   },
@@ -828,11 +847,7 @@ export const useImageStore = create<ImageStoreState>((set, get) => ({
   patchCrop: (patch) => set((s) => ({ crop: { ...s.crop, ...patch } })),
   patchStitch: (patch) => set((s) => ({ stitch: { ...s.stitch, ...patch } })),
   patchSplitConfig: (patch) => set((s) => ({ splitConfig: { ...s.splitConfig, ...patch } })),
-  patchExportConfig: (patch) =>
-    set((s) => ({
-      exportConfig: { ...s.exportConfig, ...patch },
-      formatByTool: patch.format ? { ...s.formatByTool, [s.tool]: patch.format } : s.formatByTool
-    })),
+  patchExportConfig: (patch) => set((s) => ({ exportConfig: { ...s.exportConfig, ...patch } })),
 
   resetCurrentTool: () => {
     const s = get();
@@ -908,8 +923,7 @@ export const useImageStore = create<ImageStoreState>((set, get) => ({
       set({
         undoByTool: nextUndo,
         compress: cSnap.compress,
-        exportConfig: { ...s.exportConfig, format: cSnap.format, quality: cSnap.quality },
-        formatByTool: { ...s.formatByTool, compress: cSnap.format }
+        exportConfig: { ...s.exportConfig, format: cSnap.format, quality: cSnap.quality }
       });
     }
     else if (t === 'resize') set({ undoByTool: nextUndo, resize: snap as ResizeConfig });
@@ -974,13 +988,12 @@ export const useImageStore = create<ImageStoreState>((set, get) => ({
           ? project.settings.type
           : 'image/png') as ImageExportConfig['format'];
         set((state) => ({
-          tool: 'stitch',
+          ...switchImageTool(state, 'stitch'),
           items: nextItems,
           selectedId: nextItems[0]?.id ?? null,
           facesByItemId: {},
           selectedFaceId: null,
           stitch: { ...DEFAULT_STITCH, ...project.settings },
-          formatByTool: { ...state.formatByTool, stitch: fmt },
           exportConfig: {
             ...state.exportConfig,
             format: fmt,
@@ -1072,13 +1085,13 @@ export const useImageStore = create<ImageStoreState>((set, get) => ({
           }
           importGeneration += 1;
           get().items.forEach((old) => old.decoded.dispose?.());
-          set({
+          set((state) => ({
+            ...switchImageTool(state, 'stitch'),
             items: nextItems,
             selectedId: nextItems[0]?.id ?? null,
             facesByItemId: {},
-            selectedFaceId: null,
-            tool: 'stitch'
-          });
+            selectedFaceId: null
+          }));
           useAppStore.getState().notify(`已拆散为 ${nextItems.length} 张单图并切到拼图工作台`, 'success');
           return { summary: `已拆散为 ${nextItems.length} 张单图（${res.rowPattern}）` };
         } finally {
@@ -1090,7 +1103,7 @@ export const useImageStore = create<ImageStoreState>((set, get) => ({
 
   exportCurrent: async () => {
     const state = get();
-    if (!state.items.length) return;
+    if (!state.items.length || !canStartImageOutput(state)) return;
     if (state.tool === 'split') {
       await get().runSplitExportZip();
       return;
@@ -1153,7 +1166,7 @@ export const useImageStore = create<ImageStoreState>((set, get) => ({
 
   exportBatch: async () => {
     const state = get();
-    if (state.items.length < 2 || state.tool === 'stitch' || state.tool === 'split') return;
+    if (state.items.length < 2 || state.tool === 'stitch' || state.tool === 'split' || !canStartImageOutput(state)) return;
     const engine = getEngine();
     const asZip = state.exportConfig.batchZip;
 
@@ -1216,7 +1229,7 @@ export const useImageStore = create<ImageStoreState>((set, get) => ({
 
   copyCurrentPng: async () => {
     const state = get();
-    if (!state.items.length || state.tool === 'split') return;
+    if (!state.items.length || state.tool === 'split' || !canStartImageOutput(state)) return;
     const engine = getEngine();
     const { copyMaxEdge: maxEdge, copyFormat } = useAppStore.getState();
     const label = copyFormat === 'image/jpeg' ? 'JPG' : 'PNG';

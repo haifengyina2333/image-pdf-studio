@@ -4,6 +4,7 @@ import tailwindcss from '@tailwindcss/vite';
 
 export default defineConfig({
   base: './',
+  define: { __OFFLINE_SINGLE_FILE__: 'false' },
   plugins: [react(), tailwindcss()],
   build: {
     target: ['chrome110', 'edge110', 'firefox115', 'safari16.4'],

@@ -268,6 +268,7 @@ interface ToolboxGlobal {
     ) => Promise<{ image: HTMLImageElement; width: number; height: number; scale: number }>;
   };
   ImageExporter: {
+    assertExportable: (options: WatermarkOptions) => void;
     exportWatermarkedImage: (params: {
       file: File;
       options: WatermarkOptions;
@@ -599,8 +600,10 @@ export const ensurePdfJs = async () => {
     pdfJsPromise = (async () => {
       const pdfjsLib = await import('pdfjs-dist/legacy/build/pdf.mjs');
       let workerSrc = '';
-      if (window.__SINGLE_FILE_ASSETS__?.pdfWorker) {
-        const workerBytes = decodeBase64ToBytes(window.__SINGLE_FILE_ASSETS__.pdfWorker);
+      if (__OFFLINE_SINGLE_FILE__) {
+        const inlineWorker = window.__SINGLE_FILE_ASSETS__?.pdfWorker;
+        if (!inlineWorker) throw new Error('离线 PDF 组件缺失，请重新下载单文件版。');
+        const workerBytes = decodeBase64ToBytes(inlineWorker);
         workerSrc = URL.createObjectURL(new Blob([workerBytes as BlobPart], { type: 'text/javascript' }));
       } else {
         const workerMod = await import('pdfjs-dist/legacy/build/pdf.worker.min.mjs?url');

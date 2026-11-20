@@ -4,6 +4,9 @@
   const requestValue = (request) => new Promise((resolve, reject) => { request.onsuccess = () => resolve(request.result); request.onerror = () => reject(request.error ?? new Error('本地预设读取失败。')); });
   const finish = (transaction) => new Promise((resolve, reject) => { transaction.oncomplete = resolve; transaction.onerror = () => reject(transaction.error ?? new Error('本地预设写入失败。')); transaction.onabort = () => reject(transaction.error ?? new Error('本地预设写入被中止。')); });
   const finite = (value, fallback = 0) => Number.isFinite(Number(value)) ? Number(value) : fallback;
+  const assertLogoSize = (blob) => {
+    if (blob?.size > MAX_LOGO_BYTES) throw new Error('水印预设的 Logo 不能超过 2 MiB，请压缩 Logo 后重试。');
+  };
   const logoToDataUrl = async (logo) => {
     if (!logo?.blob) return null;
     const bytes = new Uint8Array(await logo.blob.arrayBuffer()); let binary = '';
@@ -14,7 +17,8 @@
     const match = /^data:(image\/(?:jpeg|png|webp));base64,([a-z0-9+/=]+)$/i.exec(logo?.dataUrl ?? '');
     if (!match) return null;
     const binary = atob(match[2]); const bytes = Uint8Array.from(binary, (character) => character.charCodeAt(0)); const blob = new Blob([bytes], { type: match[1].toLowerCase() });
-    return blob.size <= MAX_LOGO_BYTES ? { name: String(logo.name ?? 'watermark-logo').slice(0, 180), type: blob.type, blob } : null;
+    assertLogoSize(blob);
+    return { name: String(logo.name ?? 'watermark-logo').slice(0, 180), type: blob.type, blob };
   };
   const normalizeSnapshot = (value) => {
     if (!value || typeof value !== 'object' || !value.watermark || !value.output) throw new Error('预设内容不完整，无法读取。');
@@ -33,7 +37,7 @@
     constructor() { this.dbPromise = null; }
     open() { if (!globalThis.indexedDB) return Promise.reject(new Error('当前浏览器不支持本地预设存储。')); if (!this.dbPromise) this.dbPromise = new Promise((resolve, reject) => { const request = indexedDB.open(DB_NAME, DB_VERSION); request.onupgradeneeded = () => { const db = request.result; if (!db.objectStoreNames.contains(PRESETS)) db.createObjectStore(PRESETS, { keyPath: 'id' }); if (!db.objectStoreNames.contains(META)) db.createObjectStore(META, { keyPath: 'key' }); }; request.onsuccess = () => resolve(request.result); request.onerror = () => reject(request.error ?? new Error('无法打开本地预设数据库。')); }); return this.dbPromise; }
     async listPresets() { const db = await this.open(); const tx = db.transaction(PRESETS, 'readonly'); const records = await requestValue(tx.objectStore(PRESETS).getAll()); return records.sort((a, b) => b.updatedAt - a.updatedAt).map((record) => ({ ...record, snapshot: normalizeSnapshot(record.snapshot) })); }
-    async savePreset(name, snapshot, id = null) { const cleanName = String(name ?? '').trim().slice(0, 60); if (!cleanName) throw new Error('请先填写预设名称。'); const cleanSnapshot = normalizeSnapshot(snapshot); const db = await this.open(); const tx = db.transaction(PRESETS, 'readwrite'); const store = tx.objectStore(PRESETS); const all = await requestValue(store.getAll()); if (all.some((record) => record.name === cleanName && record.id !== id)) throw new Error('已有同名预设，请换一个名称。'); const existing = id ? await requestValue(store.get(id)) : null; if (id && !existing) throw new Error('预设不存在，可能已被删除。'); const now = Date.now(); const record = { id: id ?? crypto.randomUUID(), name: cleanName, snapshot: cleanSnapshot, createdAt: existing?.createdAt ?? now, updatedAt: now }; store.put(record); await finish(tx); return record; }
+    async savePreset(name, snapshot, id = null) { const cleanName = String(name ?? '').trim().slice(0, 60); if (!cleanName) throw new Error('请先填写预设名称。'); assertLogoSize(snapshot?.logo?.blob); const cleanSnapshot = normalizeSnapshot(snapshot); if (cleanSnapshot.watermark.kind === 'image' && !cleanSnapshot.logo?.blob.size) throw new Error('请先上传 Logo 水印，再保存预设。'); const db = await this.open(); const tx = db.transaction(PRESETS, 'readwrite'); const store = tx.objectStore(PRESETS); const all = await requestValue(store.getAll()); if (all.some((record) => record.name === cleanName && record.id !== id)) throw new Error('已有同名预设，请换一个名称。'); const existing = id ? await requestValue(store.get(id)) : null; if (id && !existing) throw new Error('预设不存在，可能已被删除。'); const now = Date.now(); const record = { id: id ?? crypto.randomUUID(), name: cleanName, snapshot: cleanSnapshot, createdAt: existing?.createdAt ?? now, updatedAt: now }; store.put(record); await finish(tx); return record; }
     async deletePreset(id) { const db = await this.open(); const tx = db.transaction(PRESETS, 'readwrite'); tx.objectStore(PRESETS).delete(id); await finish(tx); }
     async saveRecent(snapshot) { const db = await this.open(); const tx = db.transaction(META, 'readwrite'); tx.objectStore(META).put({ key: RECENT_KEY, snapshot: normalizeSnapshot(snapshot), updatedAt: Date.now() }); await finish(tx); }
     async loadRecent() { const db = await this.open(); const tx = db.transaction(META, 'readonly'); const record = await requestValue(tx.objectStore(META).get(RECENT_KEY)); return record?.snapshot ? normalizeSnapshot(record.snapshot) : null; }

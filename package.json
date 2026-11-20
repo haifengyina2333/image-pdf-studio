@@ -1,0 +1,35 @@
+{
+  "name": "image-pdf-studio",
+  "version": "2.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Local-first Image & PDF Studio Workbench (React 19 + TypeScript + Zustand + Tailwind v4)",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "build:web": "node scripts/build-release.mjs web",
+    "build:single": "node scripts/build-release.mjs single",
+    "build:release": "node scripts/build-release.mjs all",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "@mediapipe/tasks-vision": "^1.0.1",
+    "heic2any": "^0.0.4",
+    "lucide-react": "^0.511.0",
+    "motion": "^12.12.1",
+    "pdf-lib": "^1.17.1",
+    "pdfjs-dist": "6.2.108",
+    "react": "^19.1.0",
+    "react-dom": "^19.1.0",
+    "zustand": "^5.0.5"
+  },
+  "devDependencies": {
+    "@tailwindcss/vite": "^4.1.7",
+    "@types/react": "^19.1.4",
+    "@types/react-dom": "^19.1.4",
+    "@vitejs/plugin-react": "^4.5.0",
+    "tailwindcss": "^4.1.7",
+    "typescript": "^5.8.3",
+    "vite": "^6.3.5"
+  }
+}

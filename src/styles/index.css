@@ -1,0 +1,262 @@
+@import "tailwindcss";
+
+@theme {
+  --font-sans: -apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", system-ui, sans-serif;
+  --font-mono: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+:root {
+  --bg-app: #f7f8fc;
+  --bg-surface: #ffffff;
+  --bg-subtle: #f5f7fb;
+  --bg-well: #edf1f7;
+  --bg-stage: #eef1f7;
+  --stage-dot: rgba(37, 99, 235, 0.09);
+  --ink: #0f172a;
+  --ink-2: #334155;
+  --muted: #64748b;
+  --line: #e2e8f0;
+  --line-strong: #cbd5e1;
+  --accent: #2563eb;
+  --accent-soft: #eff6ff;
+  --accent-border: #bfdbfe;
+  --gemini-grad: linear-gradient(135deg, #3b82f6 0%, #6366f1 52%, #8b5cf6 100%);
+  --gemini-grad-hover: linear-gradient(135deg, #2563eb 0%, #4f46e5 52%, #7c3aed 100%);
+  --gemini-glow: 0 4px 16px rgba(79, 70, 229, 0.28);
+  --success: #059669;
+  --success-soft: #ecfdf5;
+  --danger: #e11d48;
+  --danger-soft: #fff1f2;
+  --shadow-card: 0 1px 2px rgba(15, 23, 42, 0.04), 0 6px 20px -6px rgba(15, 23, 42, 0.05);
+  --shadow-float: 0 12px 32px -8px rgba(15, 23, 42, 0.14), 0 0 0 1px rgba(15, 23, 42, 0.06);
+  color-scheme: light;
+}
+
+:root[data-theme="dark"] {
+  --bg-app: #0c0f16;
+  --bg-surface: #131823;
+  --bg-subtle: #171e2b;
+  --bg-well: #1e2636;
+  --bg-stage: #0e121b;
+  --stage-dot: rgba(148, 163, 184, 0.14);
+  --ink: #f1f5f9;
+  --ink-2: #cbd5e1;
+  --muted: #8b9bb4;
+  --line: #242e40;
+  --line-strong: #334159;
+  --accent: #60a5fa;
+  --accent-soft: rgba(96, 165, 250, 0.14);
+  --accent-border: rgba(96, 165, 250, 0.32);
+  --gemini-grad: linear-gradient(135deg, #3b82f6 0%, #6366f1 52%, #a855f7 100%);
+  --gemini-grad-hover: linear-gradient(135deg, #60a5fa 0%, #818cf8 52%, #c084fc 100%);
+  --gemini-glow: 0 4px 20px rgba(99, 102, 241, 0.4);
+  --success: #34d399;
+  --success-soft: rgba(16, 185, 129, 0.14);
+  --danger: #fb7185;
+  --danger-soft: rgba(244, 63, 94, 0.14);
+  --shadow-card: 0 2px 12px rgba(0, 0, 0, 0.32);
+  --shadow-float: 0 16px 40px rgba(0, 0, 0, 0.55), 0 0 0 1px rgba(255, 255, 255, 0.08);
+  color-scheme: dark;
+}
+
+/* Smooth 1.05s Theater-Dimmer Theme Switch */
+::view-transition-old(root),
+::view-transition-new(root) {
+  animation: none;
+  mix-blend-mode: normal;
+}
+::view-transition-old(root) { z-index: 1; }
+::view-transition-new(root) { z-index: 2; }
+html.is-theme-switching,
+html.is-theme-switching *,
+html.is-theme-switching *::before,
+html.is-theme-switching *::after {
+  transition:
+    background-color 1050ms cubic-bezier(0.4, 0, 0.2, 1),
+    border-color 1050ms cubic-bezier(0.4, 0, 0.2, 1),
+    color 950ms cubic-bezier(0.4, 0, 0.2, 1),
+    box-shadow 1050ms cubic-bezier(0.4, 0, 0.2, 1) !important;
+}
+
+* {
+  scrollbar-color: var(--line-strong) transparent;
+  scrollbar-width: thin;
+}
+*::-webkit-scrollbar { width: 6px; height: 6px; }
+*::-webkit-scrollbar-thumb {
+  border-radius: 999px;
+  background: var(--line-strong);
+}
+
+html, body, #root {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  font-family: var(--font-sans);
+  background-color: var(--bg-app);
+  background-image: radial-gradient(960px 440px at 50% -120px, rgba(99, 102, 241, 0.07), transparent 72%);
+  color: var(--ink);
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+:root[data-theme="dark"] body {
+  background-image: radial-gradient(960px 440px at 50% -120px, rgba(99, 102, 241, 0.16), transparent 72%);
+}
+
+.studio-dot-stage {
+  background-color: var(--bg-stage);
+  background-image: radial-gradient(var(--stage-dot) 1px, transparent 1px);
+  background-size: 16px 16px;
+}
+
+.gemini-btn {
+  background: var(--gemini-grad);
+  color: #ffffff;
+  box-shadow: var(--gemini-glow);
+  transition: transform 150ms cubic-bezier(0.34, 1.56, 0.64, 1), box-shadow 200ms ease, filter 150ms ease;
+}
+.gemini-btn:hover:not(:disabled) {
+  background: var(--gemini-grad-hover);
+  transform: translateY(-1px);
+  box-shadow: 0 6px 22px rgba(79, 70, 229, 0.38);
+}
+.gemini-btn:active:not(:disabled) {
+  transform: scale(0.975);
+}
+.gemini-btn:disabled {
+  background: var(--bg-well);
+  color: var(--muted);
+  box-shadow: none;
+  cursor: not-allowed;
+}
+
+input[type="range"] {
+  accent-color: var(--accent);
+}
+
+button:not(:disabled),
+select:not(:disabled),
+summary {
+  cursor: pointer;
+}
+
+/* Tactile Hover Feedback System (Light & Dark Mode Aware) */
+.studio-tab {
+  color: var(--muted);
+  transition: background-color 160ms ease, color 160ms ease;
+}
+.studio-tab:hover:not([data-active="true"]) {
+  color: var(--ink);
+  background: color-mix(in srgb, var(--bg-surface) 72%, var(--accent-soft));
+}
+.studio-tab[data-active="true"] {
+  color: var(--accent);
+}
+
+.studio-home-card {
+  background: var(--bg-surface);
+  border-color: var(--line);
+  box-shadow: var(--shadow-card);
+  transition:
+    background-color 180ms ease,
+    border-color 180ms ease,
+    box-shadow 200ms ease,
+    transform 180ms ease;
+}
+.studio-home-card:hover {
+  background: color-mix(in srgb, var(--accent-soft) 48%, var(--bg-surface));
+  border-color: var(--accent-border);
+  box-shadow: 0 10px 26px -10px rgba(37, 99, 235, 0.24), 0 0 0 1px var(--accent-border);
+}
+.studio-home-card .studio-home-icon {
+  background: var(--accent-soft);
+  color: var(--accent);
+  transition: background 180ms ease, color 180ms ease, transform 180ms ease, box-shadow 180ms ease;
+}
+.studio-home-card:hover .studio-home-icon {
+  background: var(--gemini-grad);
+  color: #ffffff;
+  box-shadow: var(--gemini-glow);
+}
+.studio-home-card .studio-home-title {
+  color: var(--ink);
+  transition: color 160ms ease;
+}
+.studio-home-card:hover .studio-home-title {
+  color: var(--accent);
+}
+
+.studio-secondary-btn {
+  background: var(--bg-surface);
+  border-color: var(--line-strong);
+  color: var(--ink);
+  transition: background-color 160ms ease, border-color 160ms ease, color 160ms ease, transform 150ms ease;
+}
+.studio-secondary-btn:hover:not(:disabled) {
+  background: var(--accent-soft);
+  border-color: var(--accent-border);
+  color: var(--accent);
+}
+
+.studio-chip {
+  background: var(--bg-subtle);
+  border-color: var(--line);
+  color: var(--ink-2);
+  transition: background-color 150ms ease, border-color 150ms ease, color 150ms ease;
+}
+.studio-chip:hover:not(:disabled),
+.studio-chip[data-active="true"] {
+  background: var(--accent-soft);
+  border-color: var(--accent-border);
+  color: var(--accent);
+}
+
+.studio-queue-card {
+  background: var(--bg-surface);
+  border-color: var(--line);
+  transition: background-color 150ms ease, border-color 150ms ease;
+}
+.studio-queue-card:hover {
+  background: color-mix(in srgb, var(--accent-soft) 36%, var(--bg-surface));
+  border-color: var(--accent-border);
+}
+.studio-queue-card[data-active="true"] {
+  background: var(--accent-soft);
+  border-color: var(--accent-border);
+}
+
+.studio-icon-btn {
+  background: var(--bg-subtle);
+  border-color: var(--line);
+  color: var(--ink-2);
+  transition: background-color 150ms ease, border-color 150ms ease, color 150ms ease, transform 150ms ease;
+}
+.studio-icon-btn:hover:not(:disabled) {
+  background: var(--accent-soft);
+  border-color: var(--accent-border);
+  color: var(--accent);
+}
+
+.studio-seg-btn {
+  color: var(--muted);
+  background: transparent;
+  transition: background-color 150ms ease, color 150ms ease;
+}
+.studio-seg-btn:hover:not([data-active="true"]) {
+  color: var(--ink);
+  background: color-mix(in srgb, var(--bg-surface) 60%, transparent);
+}
+.studio-seg-btn[data-active="true"] {
+  background: var(--bg-surface);
+  color: var(--accent);
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.06);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
+}

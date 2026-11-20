@@ -5,9 +5,9 @@ import { fileURLToPath } from 'node:url';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const RELEASE_DIR = resolve(ROOT, 'release');
-const SINGLE_OUT = resolve(RELEASE_DIR, '图片PDF工作台-v2.0-离线单文件.html');
+const SINGLE_OUT = resolve(RELEASE_DIR, '图片PDF工作台-v2.0.1-离线单文件.html');
 const WEB_DIR = resolve(RELEASE_DIR, 'web');
-const WEB_ZIP = resolve(RELEASE_DIR, '图片PDF工作台-v2.0-Web部署包.zip');
+const WEB_ZIP = resolve(RELEASE_DIR, '图片PDF工作台-v2.0.1-Web部署包.zip');
 
 const mode = process.argv[2] || 'all'; // 'all' | 'web' | 'single'
 

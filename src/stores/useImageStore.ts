@@ -167,6 +167,7 @@ interface ImageStoreState {
   stitch: StitchOptions;
   splitConfig: ImageSplitConfig;
   exportConfig: ImageExportConfig;
+  formatByTool: Partial<Record<ImageToolId, ImageExportConfig['format']>>;
   undoByTool: Partial<Record<ImageToolId, unknown>>;
 
   setTool: (tool: ImageToolId) => void;
@@ -229,6 +230,7 @@ const getWatermarkStore = () => {
 
 let logoDisposeFn: (() => void) | null = null;
 let stickerDisposeFn: (() => void) | null = null;
+let importGeneration = 0;
 
 const extForMime = (mime: string) => (mime === 'image/png' ? 'png' : mime === 'image/webp' ? 'webp' : 'jpg');
 
@@ -279,9 +281,17 @@ const processSingleItem = async (
     }
     if (state.tool === 'redact') {
       const faces = state.facesByItemId[item.id] ?? [];
+      const activeFaces = faces.filter((f) => f.enabled !== false);
+      if (!activeFaces.length) {
+        throw new Error(
+          faces.length
+            ? `「${item.name}」的打码区域已全部关闭，请至少启用一个区域后再导出。`
+            : `「${item.name}」还没有打码区域，请先点击「AI 自动识别人脸」或手动框选后再导出。`
+        );
+      }
       const res = await engine.FaceRedactor.processImage({
         file,
-        faces,
+        faces: activeFaces,
         options: state.redact,
         type: mime,
         quality,
@@ -346,8 +356,8 @@ const processSingleItem = async (
       dimensions: dims,
       type: mime,
       quality,
-      // Fill only when the chosen output is JPG; PNG / WebP keep their alpha channel
-      background: state.exportConfig.format === 'image/jpeg' ? state.exportConfig.background : undefined,
+      // Fill only when the effective output format is JPG; PNG / WebP (including PNG copy) keep their alpha channel
+      background: mime === 'image/jpeg' ? state.exportConfig.background : undefined,
       scope,
       signal
     });
@@ -383,14 +393,20 @@ export const useImageStore = create<ImageStoreState>((set, get) => ({
   stitch: { ...DEFAULT_STITCH },
   splitConfig: { ...DEFAULT_IMAGE_SPLIT },
   exportConfig: { ...DEFAULT_EXPORT },
+  formatByTool: {},
   undoByTool: {},
 
   setTool: (tool) =>
     set((state) => {
-      if (tool === 'stitch' && state.tool !== 'stitch') {
+      if (tool === state.tool) return {};
+      const remembered = state.formatByTool[tool];
+      if (remembered) {
+        return { tool, exportConfig: { ...state.exportConfig, format: remembered } };
+      }
+      if (tool === 'stitch') {
         return { tool, exportConfig: { ...state.exportConfig, format: 'image/png' } };
       }
-      if (tool === 'compress' && state.tool !== 'compress') {
+      if (tool === 'compress') {
         const profile = getEngine().CompressionModel.profiles[state.compress.profile];
         const q = profile ? profile.quality / 100 : state.exportConfig.quality;
         return { tool, exportConfig: { ...state.exportConfig, format: 'image/jpeg', quality: q } };
@@ -402,14 +418,20 @@ export const useImageStore = create<ImageStoreState>((set, get) => ({
     const files = Array.from(fileList);
     if (!files.length) return;
     const notify = useAppStore.getState().notify;
+    const batchGen = importGeneration;
 
     set({ importing: true });
     let added = 0;
     const errors: string[] = [];
 
     for (const file of files) {
+      if (batchGen !== importGeneration) break;
       try {
         const decoded = await decodeImageFile(file);
+        if (batchGen !== importGeneration) {
+          decoded.dispose?.();
+          break;
+        }
         const id = `img_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
         const item: ImageQueueItem = {
           id,
@@ -423,11 +445,13 @@ export const useImageStore = create<ImageStoreState>((set, get) => ({
         }));
         added += 1;
       } catch (err) {
+        if (batchGen !== importGeneration) break;
         errors.push(`${file.name}: ${err instanceof Error ? err.message : '导入失败'}`);
       }
     }
 
     set({ importing: false });
+    if (batchGen !== importGeneration) return;
     if (errors.length) notify(errors[0], 'error');
     else if (added > 0) notify(`已导入 ${added} 张图片`, 'success');
   },
@@ -529,6 +553,7 @@ export const useImageStore = create<ImageStoreState>((set, get) => ({
   },
 
   clearItems: () => {
+    importGeneration += 1;
     get().items.forEach((i) => i.decoded.dispose?.());
     set({ items: [], selectedId: null, facesByItemId: {}, selectedFaceId: null });
     useAppStore.getState().notify('已清空图片队列');
@@ -788,7 +813,11 @@ export const useImageStore = create<ImageStoreState>((set, get) => ({
   patchCrop: (patch) => set((s) => ({ crop: { ...s.crop, ...patch } })),
   patchStitch: (patch) => set((s) => ({ stitch: { ...s.stitch, ...patch } })),
   patchSplitConfig: (patch) => set((s) => ({ splitConfig: { ...s.splitConfig, ...patch } })),
-  patchExportConfig: (patch) => set((s) => ({ exportConfig: { ...s.exportConfig, ...patch } })),
+  patchExportConfig: (patch) =>
+    set((s) => ({
+      exportConfig: { ...s.exportConfig, ...patch },
+      formatByTool: patch.format ? { ...s.formatByTool, [s.tool]: patch.format } : s.formatByTool
+    })),
 
   resetCurrentTool: () => {
     const s = get();
@@ -897,21 +926,30 @@ export const useImageStore = create<ImageStoreState>((set, get) => ({
       async ({ signal, report }) => {
         const project = await engine.StitchProject.read(file, { signal });
         const nextItems: ImageQueueItem[] = [];
-        for (let i = 0; i < project.assets.length; i += 1) {
-          if (signal.aborted) throw new DOMException('任务已取消', 'AbortError');
-          const a = project.assets[i];
-          report(`正在载入原图 ${i + 1}/${project.assets.length}…`, { current: i + 1, total: project.assets.length });
-          const f = new File([a.blob], a.name, { type: a.type, lastModified: a.lastModified || Date.now() });
-          const decoded = await decodeImageFile(f, signal);
-          nextItems.push({
-            id: `img_${Date.now()}_${i}_${Math.random().toString(36).slice(2, 6)}`,
-            name: a.name,
-            size: f.size,
-            decoded
-          });
+        try {
+          for (let i = 0; i < project.assets.length; i += 1) {
+            if (signal.aborted) throw new DOMException('任务已取消', 'AbortError');
+            const a = project.assets[i];
+            report(`正在载入原图 ${i + 1}/${project.assets.length}…`, { current: i + 1, total: project.assets.length });
+            const f = new File([a.blob], a.name, { type: a.type, lastModified: a.lastModified || Date.now() });
+            const decoded = await decodeImageFile(f, signal);
+            nextItems.push({
+              id: `img_${Date.now()}_${i}_${Math.random().toString(36).slice(2, 6)}`,
+              name: a.name,
+              size: f.size,
+              decoded
+            });
+          }
+        } catch (err) {
+          nextItems.forEach((it) => it.decoded.dispose?.());
+          throw err;
         }
-        // Release old items cleanly
+        // Release old items only after full project decode succeeds
+        importGeneration += 1;
         get().items.forEach((old) => old.decoded.dispose?.());
+        const fmt = (['image/png', 'image/jpeg', 'image/webp'].includes(project.settings.type)
+          ? project.settings.type
+          : 'image/png') as ImageExportConfig['format'];
         set((state) => ({
           tool: 'stitch',
           items: nextItems,
@@ -919,11 +957,10 @@ export const useImageStore = create<ImageStoreState>((set, get) => ({
           facesByItemId: {},
           selectedFaceId: null,
           stitch: { ...DEFAULT_STITCH, ...project.settings },
+          formatByTool: { ...state.formatByTool, stitch: fmt },
           exportConfig: {
             ...state.exportConfig,
-            format: (['image/png', 'image/jpeg', 'image/webp'].includes(project.settings.type)
-              ? project.settings.type
-              : 'image/png') as ImageExportConfig['format'],
+            format: fmt,
             quality: project.settings.quality || 0.92
           }
         }));
@@ -994,17 +1031,23 @@ export const useImageStore = create<ImageStoreState>((set, get) => ({
             onProgress: (c, t) => report(`正在拆散第 ${c}/${t} 张…`, { current: c, total: t })
           });
           const nextItems: ImageQueueItem[] = [];
-          for (let i = 0; i < res.files.length; i += 1) {
-            if (signal.aborted) throw new DOMException('任务已取消', 'AbortError');
-            report(`正在导入切片 ${i + 1}/${res.files.length}…`, { current: i + 1, total: res.files.length });
-            const decoded = await decodeImageFile(res.files[i], signal);
-            nextItems.push({
-              id: `img_${Date.now()}_${i}_${Math.random().toString(36).slice(2, 6)}`,
-              name: res.files[i].name,
-              size: res.files[i].size,
-              decoded
-            });
+          try {
+            for (let i = 0; i < res.files.length; i += 1) {
+              if (signal.aborted) throw new DOMException('任务已取消', 'AbortError');
+              report(`正在导入切片 ${i + 1}/${res.files.length}…`, { current: i + 1, total: res.files.length });
+              const decoded = await decodeImageFile(res.files[i], signal);
+              nextItems.push({
+                id: `img_${Date.now()}_${i}_${Math.random().toString(36).slice(2, 6)}`,
+                name: res.files[i].name,
+                size: res.files[i].size,
+                decoded
+              });
+            }
+          } catch (err) {
+            nextItems.forEach((it) => it.decoded.dispose?.());
+            throw err;
           }
+          importGeneration += 1;
           get().items.forEach((old) => old.decoded.dispose?.());
           set({
             items: nextItems,
@@ -1094,6 +1137,7 @@ export const useImageStore = create<ImageStoreState>((set, get) => ({
       },
       async ({ signal, report }) => {
         const outputs: { name: string; blob: Blob }[] = [];
+        const failed: string[] = [];
         const usedNames = new Set<string>();
         const uniqueName = (base: string, ext: string) => {
           let candidate = `${base}.${ext}`;
@@ -1107,26 +1151,37 @@ export const useImageStore = create<ImageStoreState>((set, get) => ({
           if (signal.aborted) throw new DOMException('任务已取消', 'AbortError');
           const item = state.items[i];
           report(`正在处理 ${i + 1}/${state.items.length}：${item.name}`, { current: i + 1, total: state.items.length });
-          const res = await processSingleItem(item, state, undefined, signal);
-          const name = uniqueName(stemOf(item.name), res.ext);
-          outputs.push({ name, blob: res.blob });
-          if (!asZip) triggerBlobDownload(res.blob, name);
+          try {
+            const res = await processSingleItem(item, state, undefined, signal);
+            const name = uniqueName(stemOf(item.name), res.ext);
+            outputs.push({ name, blob: res.blob });
+            if (!asZip) triggerBlobDownload(res.blob, name);
+          } catch (err) {
+            if (signal.aborted || (err instanceof DOMException && err.name === 'AbortError')) throw err;
+            failed.push(item.name);
+          }
         }
+
+        if (!outputs.length) {
+          throw new Error(`全部 ${failed.length} 张图片处理失败，请检查文件或参数后重试。`);
+        }
+
+        const failSuffix = failed.length ? `（跳过 ${failed.length} 张失败：${failed.slice(0, 2).join('、')}${failed.length > 2 ? '…' : ''}）` : '';
 
         if (asZip) {
           report('正在打包 ZIP…');
           const zipBlob = await engine.ZipArchive.createZip(outputs, { signal });
           const zipName = cleanName(state.exportConfig.filename, makeStamp('批量图片'), 'zip');
-          useAppStore.getState().notify(`已打包 ${outputs.length} 张图片：${zipName}`, 'success');
+          useAppStore.getState().notify(`已打包 ${outputs.length} 张图片：${zipName}${failSuffix}`, failed.length ? 'info' : 'success');
           return {
-            summary: `${outputs.length} 张图片 · ZIP ${formatBytes(zipBlob.size)}`,
+            summary: `${outputs.length} 张成功 · ZIP ${formatBytes(zipBlob.size)}${failSuffix}`,
             downloadBlob: zipBlob,
             downloadName: zipName
           };
         }
 
-        useAppStore.getState().notify(`已分别导出 ${outputs.length} 张图片`, 'success');
-        return { summary: `已分别下载 ${outputs.length} 张图片` };
+        useAppStore.getState().notify(`已分别导出 ${outputs.length} 张图片${failSuffix}`, failed.length ? 'info' : 'success');
+        return { summary: `已分别下载 ${outputs.length} 张图片${failSuffix}` };
       }
     );
   },
@@ -1166,7 +1221,8 @@ export const useImageStore = create<ImageStoreState>((set, get) => ({
           sourceBlob: blob,
           format: copyFormat,
           quality: state.exportConfig.quality,
-          maxEdge
+          maxEdge,
+          signal
         });
 
         const msg =

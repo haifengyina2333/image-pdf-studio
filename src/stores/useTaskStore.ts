@@ -74,7 +74,12 @@ export const useTaskStore = create<TaskState>((set, get) => ({
       startedAt: Date.now()
     };
 
-    set((state) => ({ tasks: [nextTask, ...state.tasks].slice(0, 6) }));
+    set((state) => {
+      const all = [nextTask, ...state.tasks];
+      const running = all.filter((t) => t.status === 'running');
+      const finished = all.filter((t) => t.status !== 'running').slice(0, 6);
+      return { tasks: [...running, ...finished] };
+    });
 
     const report = (stage: string, progress: { current: number; total: number } | null = null) => {
       set((state) => ({

@@ -445,7 +445,12 @@ interface ToolboxGlobal {
     compressPDF: (
       session: PdfSessionLike,
       profile: string,
-      options?: { signal?: AbortSignal; keepOriginalIfLarger?: boolean; onProgress?: (info: { stage?: string; current?: number; total?: number }) => void }
+      options?: {
+        signal?: AbortSignal;
+        keepOriginalIfLarger?: boolean;
+        pagePlan?: { sourcePage: number; rotation: number }[];
+        onProgress?: (info: { stage?: string; current?: number; total?: number }) => void;
+      }
     ) => Promise<{ blob: Blob; pageCount: number; inputBytes: number; outputBytes: number; generatedBytes: number; usedOriginal: boolean }>;
     mergePDFs: (
       inputs: { file: File; pagePlan?: { sourcePage: number; rotation: number }[] }[],
@@ -705,9 +710,14 @@ export const copyImageToClipboard = async (params: {
   format: 'image/png' | 'image/jpeg';
   quality?: number;
   maxEdge?: number;
+  signal?: AbortSignal;
 }): Promise<{ mode: 'png' | 'jpeg-native' | 'jpeg-hybrid'; bytes: number }> => {
-  const { sourceBlob, format, quality = 0.88, maxEdge = 0 } = params;
+  const { sourceBlob, format, quality = 0.88, maxEdge = 0, signal } = params;
   const engine = getEngine();
+  const checkAborted = () => {
+    if (signal?.aborted) throw new DOMException('任务已取消', 'AbortError');
+  };
+  checkAborted();
 
   if (!globalThis.isSecureContext) {
     throw new Error('当前页面不是安全环境，浏览器不允许写入剪贴板，请使用下载功能。');
@@ -718,6 +728,7 @@ export const copyImageToClipboard = async (params: {
 
   const bitmap = await createImageBitmap(sourceBlob);
   try {
+    checkAborted();
     const scale = maxEdge > 0 && Math.max(bitmap.width, bitmap.height) > maxEdge ? maxEdge / Math.max(bitmap.width, bitmap.height) : 1;
     const w = Math.max(1, Math.round(bitmap.width * scale));
     const h = Math.max(1, Math.round(bitmap.height * scale));
@@ -741,11 +752,13 @@ export const copyImageToClipboard = async (params: {
 
     if (format === 'image/png') {
       const pngBlob = scale === 1 && sourceBlob.type === 'image/png' ? sourceBlob : await encode('image/png');
+      checkAborted();
       await engine.Clipboard.copyPng(pngBlob);
       return { mode: 'png', bytes: pngBlob.size };
     }
 
     const jpgBlob = await encode('image/jpeg', Math.max(0.5, Math.min(0.96, quality)));
+    checkAborted();
     if (supportsNativeJpegClipboard()) {
       await navigator.clipboard.write([new ClipboardItem({ 'image/jpeg': jpgBlob })]);
       return { mode: 'jpeg-native', bytes: jpgBlob.size };
@@ -753,6 +766,7 @@ export const copyImageToClipboard = async (params: {
 
     // Hybrid write: compact JPG inside text/html (for rich-text editors) + PNG fallback (for chat/image apps)
     const [jpgDataUrl, pngFallback] = await Promise.all([blobToDataUrl(jpgBlob), encode('image/png')]);
+    checkAborted();
     const htmlBlob = new Blob([`<img src="${jpgDataUrl}" alt="image" />`], { type: 'text/html' });
     await navigator.clipboard.write([
       new ClipboardItem({

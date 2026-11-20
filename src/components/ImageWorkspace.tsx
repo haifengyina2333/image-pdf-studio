@@ -1793,7 +1793,7 @@ export function ImageWorkspace() {
             <input
               ref={projectInputRef}
               type="file"
-              accept="application/zip,.zip"
+              accept="application/zip,.zip,.ptbx"
               hidden
               onChange={(e) => {
                 const f = e.target.files?.[0];

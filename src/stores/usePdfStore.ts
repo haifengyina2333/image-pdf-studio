@@ -185,6 +185,15 @@ const defaultPlanForSession = (session: PdfSessionLike): PdfOrganizePageItem[] =
     rotation: 0
   }));
 
+const isPlanEdited = (session: PdfSessionLike, plan?: PdfOrganizePageItem[]): boolean => {
+  if (!plan) return false;
+  if (plan.length !== session.numPages) return true;
+  return plan.some((item, idx) => item.sourcePage !== idx + 1 || item.rotation !== 0);
+};
+
+const snapshotPagePlan = (session: PdfSessionLike, plan?: PdfOrganizePageItem[]) =>
+  isPlanEdited(session, plan) ? plan!.map((p) => ({ sourcePage: p.sourcePage, rotation: p.rotation })) : undefined;
+
 export const usePdfStore = create<PdfState>((set, get) => ({
   tool: 'compress',
   sessions: [],
@@ -416,10 +425,11 @@ export const usePdfStore = create<PdfState>((set, get) => ({
   },
 
   runCompress: async () => {
-    const { sessions, activeId, compress } = get();
+    const { sessions, activeId, compress, pagePlans } = get();
     const session = sessions.find((s) => s.id === activeId);
     if (!session) return;
     const engine = getEngine();
+    const pagePlan = snapshotPagePlan(session, pagePlans[session.id]);
     const filename = `${cleanStem(compress.filename, `${session.file.name.replace(/\.pdf$/i, '')}-压缩`)}.pdf`;
 
     await useTaskStore.getState().runTask(
@@ -430,18 +440,26 @@ export const usePdfStore = create<PdfState>((set, get) => ({
           const action = stage === 'render' ? '渲染页面' : stage === 'encode' ? '编码图像' : stage === 'read' ? '读取结构' : '生成 PDF';
           report(`正在${action} ${current}/${total}…`, { current, total });
         };
+        const keepSmaller = pagePlan ? false : compress.keepSmaller;
         const result =
           compress.mode === 'raster'
             ? await engine.PDFProcessor.compressPDF(session, compress.profile, {
                 signal,
-                keepOriginalIfLarger: compress.keepSmaller,
+                keepOriginalIfLarger: keepSmaller,
+                pagePlan,
                 onProgress
               })
-            : await engine.PDFProcessor.optimizePDF(session.file, {
-                signal,
-                keepOriginalIfLarger: compress.keepSmaller,
-                onProgress
-              });
+            : pagePlan
+              ? {
+                  ...(await engine.PDFProcessor.savePagePlan(session.file, pagePlan, { signal, onProgress })),
+                  generatedBytes: 0,
+                  usedOriginal: false
+                }
+              : await engine.PDFProcessor.optimizePDF(session.file, {
+                  signal,
+                  keepOriginalIfLarger: keepSmaller,
+                  onProgress
+                });
 
         const delta = result.inputBytes ? Math.round((1 - result.outputBytes / result.inputBytes) * 100) : 0;
         const summary = result.usedOriginal
@@ -486,26 +504,27 @@ export const usePdfStore = create<PdfState>((set, get) => ({
   },
 
   runMerge: async () => {
-    const { sessions, mergeFilename } = get();
+    const { sessions, mergeFilename, pagePlans } = get();
     if (sessions.length < 2) return;
     const engine = getEngine();
     const filename = `${cleanStem(mergeFilename, '合并文档')}.pdf`;
+    const inputs = sessions.map((s) => ({
+      file: s.file,
+      pagePlan: snapshotPagePlan(s, pagePlans[s.id])
+    }));
 
     await useTaskStore.getState().runTask(
       { kind: 'pdf-merge', title: `合并 ${sessions.length} 份 PDF`, initialStage: '正在加载 PDF 引擎…' },
       async ({ signal, report }) => {
         await ensurePdfLib();
-        const res = await engine.PDFProcessor.mergePDFs(
-          sessions.map((s) => ({ file: s.file })),
-          {
-            signal,
-            onProgress: ({ stage, current = 1, total = sessions.length, fileName }) =>
-              report(stage === 'save' ? '正在生成合并文档…' : `正在合并 ${current}/${total}：${fileName || ''}`, {
-                current,
-                total
-              })
-          }
-        );
+        const res = await engine.PDFProcessor.mergePDFs(inputs, {
+          signal,
+          onProgress: ({ stage, current = 1, total = sessions.length, fileName }) =>
+            report(stage === 'save' ? '正在生成合并文档…' : `正在合并 ${current}/${total}：${fileName || ''}`, {
+              current,
+              total
+            })
+        });
         useAppStore.getState().notify(`合并完成：${filename}`, 'success');
         return {
           summary: `${res.fileCount} 份文档 · 共 ${res.pageCount} 页 · ${formatBytes(res.outputBytes)}`,
@@ -555,21 +574,23 @@ export const usePdfStore = create<PdfState>((set, get) => ({
   },
 
   runWatermark: async () => {
-    const { sessions, activeId, watermark } = get();
+    const { sessions, activeId, watermark, pagePlans } = get();
     const session = sessions.find((s) => s.id === activeId);
     if (!session) return;
     const engine = getEngine();
+    const pagePlan = snapshotPagePlan(session, pagePlans[session.id]) ?? null;
+    const effectiveTotal = pagePlan ? pagePlan.length : session.numPages;
     const filename = `${cleanStem(watermark.filename, `${session.file.name.replace(/\.pdf$/i, '')}-水印`)}.pdf`;
 
     await useTaskStore.getState().runTask(
       { kind: 'pdf-watermark', title: `PDF 水印：${session.file.name}`, initialStage: '正在生成水印图层…' },
       async ({ signal, report }) => {
         await ensurePdfLib();
-        const pages = engine.PageRange.parsePageSelection(watermark.pages, session.numPages);
+        const pages = engine.PageRange.parsePageSelection(watermark.pages, effectiveTotal);
         const stampBlob = await makeTextStampBlob(watermark.text, watermark.color);
         const res = await engine.PDFProcessor.watermarkPDF(
           session.file,
-          null,
+          pagePlan,
           stampBlob,
           {
             pages,

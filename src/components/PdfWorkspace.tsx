@@ -27,7 +27,7 @@ import {
 } from 'lucide-react';
 import { formatBytes, getEngine } from '../bridge/engine';
 import { useAppStore } from '../stores/useAppStore';
-import { idCardSheetOptions, PdfToolId, usePdfStore } from '../stores/usePdfStore';
+import { getCompareTargetSession, getSignaturePlacementsForSession, idCardSheetOptions, PdfToolId, selectCompareResults, usePdfStore } from '../stores/usePdfStore';
 import { useTaskStore } from '../stores/useTaskStore';
 import { NumericInput } from './NumericInput';
 import { PdfCompareStage } from './PdfCompareStage';
@@ -113,12 +113,12 @@ export function PdfWorkspace() {
   const split = usePdfStore((s) => s.split);
   const watermark = usePdfStore((s) => s.watermark);
   const signatureAssets = usePdfStore((s) => s.signatureAssets);
-  const signaturePlacements = usePdfStore((s) => s.signaturePlacements);
+  const allSignaturePlacements = usePdfStore((s) => s.signaturePlacements);
   const selectedPlacementId = usePdfStore((s) => s.selectedPlacementId);
   const signFilename = usePdfStore((s) => s.signFilename);
   const pageNumbers = usePdfStore((s) => s.pageNumbers);
   const compare = usePdfStore((s) => s.compare);
-  const compareResults = usePdfStore((s) => s.compareResults);
+  const compareResults = usePdfStore(selectCompareResults);
   const imageToPdf = usePdfStore((s) => s.imageToPdf);
   const pdfToImage = usePdfStore((s) => s.pdfToImage);
   const pdfImages = usePdfStore((s) => s.pdfImages);
@@ -200,10 +200,8 @@ export function PdfWorkspace() {
   } | null>(null);
 
   const activeSession = sessions.find((s) => s.id === activeId) ?? null;
-  const compareTargetSession =
-    sessions.find((s) => s.id === compare.targetSessionId && s.id !== activeId) ??
-    sessions.find((s) => s.id !== activeId) ??
-    null;
+  const compareTargetSession = getCompareTargetSession(sessions, activeId, compare.targetSessionId) ?? null;
+  const signaturePlacements = getSignaturePlacementsForSession(allSignaturePlacements, activeId, activeId ? pagePlans[activeId] : undefined);
   const activePlan = activeSession
     ? pagePlans[activeSession.id] ??
       Array.from({ length: activeSession.numPages }, (_, idx) => ({

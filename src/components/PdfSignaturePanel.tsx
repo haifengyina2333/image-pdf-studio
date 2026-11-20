@@ -1,7 +1,7 @@
 import { useRef, useState } from 'react';
 import { Check, Eraser, ImagePlus, PenTool, Plus, Stamp, Trash2 } from 'lucide-react';
 import { useAppStore } from '../stores/useAppStore';
-import { usePdfStore } from '../stores/usePdfStore';
+import { getSignaturePlacementsForSession, usePdfStore } from '../stores/usePdfStore';
 
 const INK_COLORS = [
   { id: 'black', label: '签字黑', color: '#111827' },
@@ -101,7 +101,9 @@ const processUploadedStamp = async (
 export function PdfSignaturePanel() {
   const currentPage = usePdfStore((s) => s.currentPage);
   const assets = usePdfStore((s) => s.signatureAssets);
-  const placements = usePdfStore((s) => s.signaturePlacements);
+  const activeId = usePdfStore((s) => s.activeId);
+  const plan = usePdfStore((s) => s.activeId ? s.pagePlans[s.activeId] : undefined);
+  const allPlacements = usePdfStore((s) => s.signaturePlacements);
   const selectedPlacementId = usePdfStore((s) => s.selectedPlacementId);
 
   const addSignatureAsset = usePdfStore((s) => s.addSignatureAsset);
@@ -123,7 +125,17 @@ export function PdfSignaturePanel() {
   const uploadRef = useRef<HTMLInputElement>(null);
   const drawingRef = useRef<{ active: boolean; lastX: number; lastY: number }>({ active: false, lastX: 0, lastY: 0 });
 
+  const placements = getSignaturePlacementsForSession(allPlacements, activeId, plan);
   const selectedPlacement = placements.find((p) => p.id === selectedPlacementId) ?? null;
+
+  const placeIfStillViewingOriginal = (id: string) => {
+    const state = usePdfStore.getState();
+    if (activeId && state.activeId === activeId && state.currentPage === currentPage && state.pagePlans[activeId] === plan) {
+      placeSignature(id, currentPage);
+      return true;
+    }
+    return false;
+  };
 
   const padCoords = (e: React.PointerEvent<HTMLCanvasElement>) => {
     const canvas = padRef.current!;
@@ -153,9 +165,9 @@ export function PdfSignaturePanel() {
       name: `手写签名 ${assets.length + 1}`,
       ...trimmed
     });
-    placeSignature(id, currentPage);
+    const placed = placeIfStillViewingOriginal(id);
     clearPad();
-    notify('已生成签名并放到当前页，可在画布上直接拖拽和缩放', 'success');
+    notify(placed ? '已生成签名并放到当前页，可在画布上直接拖拽和缩放' : '签名已加入素材库，请手动放到需要的页面', 'success');
   };
 
   const handleStampUpload = async (file: File) => {
@@ -165,8 +177,8 @@ export function PdfSignaturePanel() {
         name: file.name.replace(/\.[^.]+$/, '') || '印章',
         ...processed
       });
-      placeSignature(id, currentPage);
-      notify(`已载入「${file.name}」并放到当前页`, 'success');
+      const placed = placeIfStillViewingOriginal(id);
+      notify(placed ? `已载入「${file.name}」并放到当前页` : `「${file.name}」已加入素材库，请手动放到需要的页面`, 'success');
     } catch (err) {
       notify(err instanceof Error ? err.message : '印章处理失败', 'error');
     }

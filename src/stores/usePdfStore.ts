@@ -7,6 +7,7 @@ import {
   formatBytes,
   getEngine,
   IdCardSheetOptions,
+  PdfComparePageResult,
   PdfSessionLike
 } from '../bridge/engine';
 import { useAppStore } from './useAppStore';
@@ -18,9 +19,58 @@ export type PdfToolId =
   | 'merge'
   | 'split'
   | 'watermark'
+  | 'sign'
+  | 'page-numbers'
+  | 'compare'
   | 'image-to-pdf'
   | 'pdf-to-image'
   | 'id-card';
+
+export interface PdfSignatureAsset {
+  id: string;
+  name: string;
+  dataUrl: string;
+  blob: Blob;
+  width: number;
+  height: number;
+}
+
+export interface PdfSignaturePlacement {
+  id: string;
+  stampId: string;
+  page: number;
+  applyAll: boolean;
+  xRatio: number;
+  yRatio: number;
+  widthRatio: number;
+  rotation: number;
+  opacity: number;
+}
+
+export interface PdfPageNumberConfig {
+  pageNumberEnabled: boolean;
+  format: 'zh-total' | 'slash' | 'plain' | 'dash' | 'en';
+  position: 'bottom-center' | 'bottom-right' | 'bottom-left' | 'top-right' | 'top-center' | 'top-left';
+  startNumber: number;
+  skipFirstPage: boolean;
+  headerText: string;
+  headerAlign: 'left' | 'center' | 'right';
+  footerText: string;
+  footerAlign: 'left' | 'center' | 'right';
+  fontSize: number;
+  marginMm: number;
+  color: string;
+  pages: string;
+  filename: string;
+}
+
+export interface PdfCompareConfig {
+  targetSessionId: string | null;
+  viewMode: 'overlay' | 'side-by-side' | 'highlight';
+  threshold: number;
+  onlyDiffExport: boolean;
+  filename: string;
+}
 
 export interface PdfOrganizePageItem {
   uid: string;
@@ -64,10 +114,13 @@ export interface PdfImageToPdfConfig {
 }
 
 export interface PdfToImageConfig {
+  outputMode: 'pages' | 'long-image';
   pages: string;
   format: 'image/jpeg' | 'image/png';
   dpi: number;
   quality: number;
+  gap: number;
+  divider: boolean;
   filename: string;
 }
 
@@ -109,6 +162,31 @@ export const DEFAULT_PDF_WATERMARK: PdfWatermarkConfig = {
   rotation: -25,
   size: 28,
   density: 3,
+  filename: ''
+};
+
+export const DEFAULT_PDF_PAGE_NUMBERS: PdfPageNumberConfig = {
+  pageNumberEnabled: true,
+  format: 'zh-total',
+  position: 'bottom-center',
+  startNumber: 1,
+  skipFirstPage: false,
+  headerText: '',
+  headerAlign: 'center',
+  footerText: '',
+  footerAlign: 'left',
+  fontSize: 11,
+  marginMm: 12,
+  color: '#475569',
+  pages: '',
+  filename: ''
+};
+
+export const DEFAULT_PDF_COMPARE: PdfCompareConfig = {
+  targetSessionId: null,
+  viewMode: 'overlay',
+  threshold: 24,
+  onlyDiffExport: true,
   filename: ''
 };
 
@@ -154,6 +232,13 @@ interface PdfState {
   mergeFilename: string;
   split: PdfSplitConfig;
   watermark: PdfWatermarkConfig;
+  signatureAssets: PdfSignatureAsset[];
+  signaturePlacements: PdfSignaturePlacement[];
+  selectedPlacementId: string | null;
+  signFilename: string;
+  pageNumbers: PdfPageNumberConfig;
+  compare: PdfCompareConfig;
+  compareResults: PdfComparePageResult[];
   imageToPdf: PdfImageToPdfConfig;
   pdfToImage: PdfToImageConfig;
   pdfImages: PdfImageQueueItem[];
@@ -189,6 +274,16 @@ interface PdfState {
   setMergeFilename: (name: string) => void;
   patchSplit: (patch: Partial<PdfSplitConfig>) => void;
   patchWatermark: (patch: Partial<PdfWatermarkConfig>) => void;
+  addSignatureAsset: (asset: Omit<PdfSignatureAsset, 'id'>) => string;
+  removeSignatureAsset: (id: string) => void;
+  placeSignature: (stampId: string, page?: number) => void;
+  updateSignaturePlacement: (id: string, patch: Partial<PdfSignaturePlacement>) => void;
+  removeSignaturePlacement: (id: string) => void;
+  clearSignaturePlacements: () => void;
+  selectSignaturePlacement: (id: string | null) => void;
+  setSignFilename: (name: string) => void;
+  patchPageNumbers: (patch: Partial<PdfPageNumberConfig>) => void;
+  patchCompare: (patch: Partial<PdfCompareConfig>) => void;
   patchImageToPdf: (patch: Partial<PdfImageToPdfConfig>) => void;
   patchPdfToImage: (patch: Partial<PdfToImageConfig>) => void;
   patchIdCard: (patch: Partial<PdfIdCardConfig>) => void;
@@ -200,6 +295,10 @@ interface PdfState {
   runMerge: () => Promise<void>;
   runSplit: () => Promise<void>;
   runWatermark: () => Promise<void>;
+  runSignPdf: () => Promise<void>;
+  runPageNumbers: () => Promise<void>;
+  runCompareScan: () => Promise<void>;
+  runExportCompareReport: () => Promise<void>;
   runImagesToPdf: () => Promise<void>;
   runPdfToImages: () => Promise<void>;
   runIdCardSheet: () => Promise<void>;
@@ -278,8 +377,15 @@ export const usePdfStore = create<PdfState>((set, get) => ({
   mergeFilename: '',
   split: { mode: 'every', ranges: '', filename: '' },
   watermark: { ...DEFAULT_PDF_WATERMARK },
+  signatureAssets: [],
+  signaturePlacements: [],
+  selectedPlacementId: null,
+  signFilename: '',
+  pageNumbers: { ...DEFAULT_PDF_PAGE_NUMBERS },
+  compare: { ...DEFAULT_PDF_COMPARE },
+  compareResults: [],
   imageToPdf: { pageSize: 'a4', orientation: 'auto', marginMm: 10, background: '#ffffff', quality: 0.9, filename: '' },
-  pdfToImage: { pages: '', format: 'image/jpeg', dpi: 144, quality: 0.9, filename: '' },
+  pdfToImage: { outputMode: 'pages', pages: '', format: 'image/jpeg', dpi: 144, quality: 0.9, gap: 12, divider: true, filename: '' },
   pdfImages: [],
   idCard: { ...DEFAULT_PDF_ID_CARD },
   idCardFilename: '',
@@ -557,6 +663,56 @@ export const usePdfStore = create<PdfState>((set, get) => ({
   setMergeFilename: (mergeFilename) => set({ mergeFilename }),
   patchSplit: (patch) => set((s) => ({ split: { ...s.split, ...patch } })),
   patchWatermark: (patch) => set((s) => ({ watermark: { ...s.watermark, ...patch } })),
+  addSignatureAsset: (asset) => {
+    const id = `sig_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`;
+    set((s) => ({ signatureAssets: [{ ...asset, id }, ...s.signatureAssets] }));
+    return id;
+  },
+  removeSignatureAsset: (id) =>
+    set((s) => ({
+      signatureAssets: s.signatureAssets.filter((a) => a.id !== id),
+      signaturePlacements: s.signaturePlacements.filter((p) => p.stampId !== id),
+      selectedPlacementId:
+        s.signaturePlacements.find((p) => p.id === s.selectedPlacementId)?.stampId === id ? null : s.selectedPlacementId
+    })),
+  placeSignature: (stampId, page) => {
+    const s = get();
+    const targetPage = page ?? s.currentPage;
+    const id = `place_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`;
+    const placement: PdfSignaturePlacement = {
+      id,
+      stampId,
+      page: targetPage,
+      applyAll: false,
+      xRatio: 0.72,
+      yRatio: 0.82,
+      widthRatio: 0.22,
+      rotation: 0,
+      opacity: 1
+    };
+    set((prev) => ({
+      signaturePlacements: [...prev.signaturePlacements, placement],
+      selectedPlacementId: id
+    }));
+  },
+  updateSignaturePlacement: (id, patch) =>
+    set((s) => ({
+      signaturePlacements: s.signaturePlacements.map((p) => (p.id === id ? { ...p, ...patch } : p))
+    })),
+  removeSignaturePlacement: (id) =>
+    set((s) => ({
+      signaturePlacements: s.signaturePlacements.filter((p) => p.id !== id),
+      selectedPlacementId: s.selectedPlacementId === id ? null : s.selectedPlacementId
+    })),
+  clearSignaturePlacements: () => set({ signaturePlacements: [], selectedPlacementId: null }),
+  selectSignaturePlacement: (id) => set({ selectedPlacementId: id }),
+  setSignFilename: (signFilename) => set({ signFilename }),
+  patchPageNumbers: (patch) => set((s) => ({ pageNumbers: { ...s.pageNumbers, ...patch } })),
+  patchCompare: (patch) =>
+    set((s) => ({
+      compare: { ...s.compare, ...patch },
+      ...(patch.targetSessionId !== undefined || patch.threshold !== undefined ? { compareResults: [] } : {})
+    })),
   patchImageToPdf: (patch) => set((s) => ({ imageToPdf: { ...s.imageToPdf, ...patch } })),
   patchPdfToImage: (patch) => set((s) => ({ pdfToImage: { ...s.pdfToImage, ...patch } })),
   patchIdCard: (patch) => set((s) => ({ idCard: { ...s.idCard, ...patch } })),
@@ -569,11 +725,14 @@ export const usePdfStore = create<PdfState>((set, get) => ({
       get().restoreOrganizePages();
       return;
     } else if (tool === 'watermark') set({ watermark: { ...DEFAULT_PDF_WATERMARK, text: watermark.text } });
+    else if (tool === 'sign') set({ signaturePlacements: [], selectedPlacementId: null, signFilename: '' });
+    else if (tool === 'page-numbers') set({ pageNumbers: { ...DEFAULT_PDF_PAGE_NUMBERS } });
+    else if (tool === 'compare') set({ compare: { ...DEFAULT_PDF_COMPARE }, compareResults: [] });
     else if (tool === 'split') set({ split: { mode: 'every', ranges: '', filename: '' } });
     else if (tool === 'image-to-pdf')
       set({ imageToPdf: { pageSize: 'a4', orientation: 'auto', marginMm: 10, background: '#ffffff', quality: 0.9, filename: '' } });
     else if (tool === 'pdf-to-image')
-      set({ pdfToImage: { pages: '', format: 'image/jpeg', dpi: 144, quality: 0.9, filename: '' } });
+      set({ pdfToImage: { outputMode: 'pages', pages: '', format: 'image/jpeg', dpi: 144, quality: 0.9, gap: 12, divider: true, filename: '' } });
     else if (tool === 'id-card') set({ idCard: { ...DEFAULT_PDF_ID_CARD, text: idCard.text } });
     useAppStore.getState().notify('已重置当前 PDF 工具参数');
   },
@@ -813,22 +972,247 @@ export const usePdfStore = create<PdfState>((set, get) => ({
     );
   },
 
+  runSignPdf: async () => {
+    const { sessions, activeId, pagePlans, signatureAssets, signaturePlacements, signFilename } = get();
+    const session = sessions.find((s) => s.id === activeId);
+    if (!session) return;
+    const notify = useAppStore.getState().notify;
+    if (!signaturePlacements.length) {
+      notify('请先在页面上放置至少一个签名或印章', 'error');
+      return;
+    }
+    const engine = getEngine();
+    const pagePlan = snapshotPagePlan(session, pagePlans[session.id]) ?? null;
+    const effectiveTotal = pagePlan ? pagePlan.length : session.numPages;
+    const allPages = Array.from({ length: effectiveTotal }, (_, idx) => idx + 1);
+    const filename = `${cleanStem(signFilename, `${session.file.name.replace(/\.pdf$/i, '')}-已签章`)}.pdf`;
+
+    const payload = signaturePlacements
+      .map((pl) => {
+        const asset = signatureAssets.find((a) => a.id === pl.stampId);
+        if (!asset) return null;
+        return {
+          stampId: asset.id,
+          stampBytes: asset.blob,
+          page: pl.page,
+          pages: pl.applyAll ? allPages : [pl.page],
+          xRatio: pl.xRatio,
+          yRatio: pl.yRatio,
+          widthRatio: pl.widthRatio,
+          rotation: pl.rotation,
+          opacity: pl.opacity
+        };
+      })
+      .filter((x): x is NonNullable<typeof x> => Boolean(x));
+
+    if (!payload.length) {
+      notify('签名资源已失效，请重新放置签名或印章', 'error');
+      return;
+    }
+
+    await useTaskStore.getState().runTask(
+      { kind: 'pdf-sign', title: `PDF 签名盖章：${session.file.name}`, initialStage: '正在加载 PDF 引擎…' },
+      async ({ signal, report }) => {
+        await ensurePdfLib();
+        const res = await engine.PDFProcessor.signPDF(session.file, pagePlan, payload, {
+          signal,
+          onProgress: ({ stage, current = 1, total = payload.length }) =>
+            report(stage === 'save' ? '正在保存签章 PDF…' : `正在写入第 ${current}/${total} 处签章…`, { current, total })
+        });
+        notify(`签章导出完成：${filename}`, 'success');
+        return {
+          summary: `已写入 ${res.placedCount} 处签名/印章 · ${formatBytes(res.outputBytes)}`,
+          downloadBlob: res.blob,
+          downloadName: filename
+        };
+      }
+    );
+  },
+
+  runPageNumbers: async () => {
+    const { sessions, activeId, pagePlans, pageNumbers } = get();
+    const session = sessions.find((s) => s.id === activeId);
+    if (!session) return;
+    const notify = useAppStore.getState().notify;
+    if (!pageNumbers.pageNumberEnabled && !pageNumbers.headerText.trim() && !pageNumbers.footerText.trim()) {
+      notify('请至少开启页码或填写页眉 / 页脚文字', 'error');
+      return;
+    }
+    const engine = getEngine();
+    const pagePlan = snapshotPagePlan(session, pagePlans[session.id]) ?? null;
+    const effectiveTotal = pagePlan ? pagePlan.length : session.numPages;
+    const filename = `${cleanStem(pageNumbers.filename, `${session.file.name.replace(/\.pdf$/i, '')}-页码`)}.pdf`;
+
+    await useTaskStore.getState().runTask(
+      { kind: 'pdf-page-numbers', title: `添加页码与页眉页脚：${session.file.name}`, initialStage: '正在加载 PDF 引擎…' },
+      async ({ signal, report }) => {
+        await ensurePdfLib();
+        const pages = engine.PageRange.parsePageSelection(pageNumbers.pages, effectiveTotal);
+        const res = await engine.PDFProcessor.addHeaderFooterPDF(
+          session.file,
+          pagePlan,
+          {
+            pageNumberEnabled: pageNumbers.pageNumberEnabled,
+            format: pageNumbers.format,
+            position: pageNumbers.position,
+            startNumber: pageNumbers.startNumber,
+            skipFirstPage: pageNumbers.skipFirstPage,
+            headerText: pageNumbers.headerText,
+            headerAlign: pageNumbers.headerAlign,
+            footerText: pageNumbers.footerText,
+            footerAlign: pageNumbers.footerAlign,
+            fontSize: pageNumbers.fontSize,
+            marginMm: pageNumbers.marginMm,
+            color: pageNumbers.color,
+            pages
+          },
+          {
+            signal,
+            onProgress: ({ stage, current = 1, total = effectiveTotal }) =>
+              report(stage === 'save' ? '正在保存 PDF…' : `正在处理第 ${current}/${total} 页…`, { current, total })
+          }
+        );
+        notify(`已添加页码/页眉页脚：${filename}`, 'success');
+        return {
+          summary: `已处理 ${res.appliedCount} 页 · ${formatBytes(res.outputBytes)}`,
+          downloadBlob: res.blob,
+          downloadName: filename
+        };
+      }
+    );
+  },
+
+  runCompareScan: async () => {
+    const { sessions, activeId, compare, pagePlans } = get();
+    const sessionA = sessions.find((s) => s.id === activeId);
+    const sessionB = sessions.find((s) => s.id === compare.targetSessionId) ?? sessions.find((s) => s.id !== activeId);
+    const notify = useAppStore.getState().notify;
+    if (!sessionA || !sessionB || sessionA.id === sessionB.id) {
+      notify('请先导入至少两份 PDF 文档用于对比', 'error');
+      return;
+    }
+    const engine = getEngine();
+    const planA = snapshotPagePlan(sessionA, pagePlans[sessionA.id]) ?? null;
+    const planB = snapshotPagePlan(sessionB, pagePlans[sessionB.id]) ?? null;
+
+    await useTaskStore.getState().runTask(
+      { kind: 'pdf-compare', title: `全本差异扫描：${sessionA.file.name} vs ${sessionB.file.name}`, initialStage: '正在逐页像素比对…' },
+      async ({ signal, report }) => {
+        const res = await engine.PDFCompare.scanDocumentDifferences(sessionA, sessionB, {
+          planA,
+          planB,
+          threshold: compare.threshold,
+          signal,
+          onProgress: ({ current, total }) => report(`正在比对第 ${current}/${total} 页…`, { current, total })
+        });
+        set({
+          compare: { ...get().compare, targetSessionId: sessionB.id },
+          compareResults: res.pages,
+          ...(res.diffPages.length ? { currentPage: res.diffPages[0] } : {})
+        });
+        const msg = res.diffPages.length
+          ? `共扫描 ${res.totalPages} 页，发现 ${res.diffPages.length} 页存在差异（第 ${res.diffPages.slice(0, 6).join('、')}${res.diffPages.length > 6 ? '…' : ''} 页）`
+          : `共扫描 ${res.totalPages} 页，两份文档视觉内容完全一致`;
+        notify(msg, res.diffPages.length ? 'info' : 'success');
+        return { summary: msg };
+      }
+    );
+  },
+
+  runExportCompareReport: async () => {
+    const { sessions, activeId, compare, compareResults, pagePlans } = get();
+    const sessionA = sessions.find((s) => s.id === activeId);
+    const sessionB = sessions.find((s) => s.id === compare.targetSessionId) ?? sessions.find((s) => s.id !== activeId);
+    const notify = useAppStore.getState().notify;
+    if (!sessionA || !sessionB || sessionA.id === sessionB.id) {
+      notify('请先导入两份 PDF 文档', 'error');
+      return;
+    }
+    const engine = getEngine();
+    const planA = snapshotPagePlan(sessionA, pagePlans[sessionA.id]) ?? null;
+    const planB = snapshotPagePlan(sessionB, pagePlans[sessionB.id]) ?? null;
+    const total = Math.max(planA?.length ?? sessionA.numPages, planB?.length ?? sessionB.numPages);
+    const diffPages = compareResults.filter((r) => r.hasDiff).map((r) => r.page);
+    const targetPages =
+      compare.onlyDiffExport && diffPages.length ? diffPages : Array.from({ length: total }, (_, idx) => idx + 1);
+    const filename = `${cleanStem(compare.filename, `${sessionA.file.name.replace(/\.pdf$/i, '')}-差异对比`)}.pdf`;
+
+    await useTaskStore.getState().runTask(
+      { kind: 'pdf-compare', title: `导出 PDF 差异报告（${targetPages.length} 页）`, initialStage: '正在加载 PDF 引擎…' },
+      async ({ signal, report }) => {
+        await ensurePdfLib();
+        const res = await engine.PDFCompare.exportDiffReportPDF(sessionA, sessionB, targetPages, {
+          planA,
+          planB,
+          mode: compare.viewMode === 'highlight' ? 'highlight' : 'overlay',
+          threshold: compare.threshold,
+          signal,
+          onProgress: ({ stage, current = 1, total: t = targetPages.length, pageNumber }) =>
+            report(stage === 'save' ? '正在打包差异报告 PDF…' : `正在渲染对比第 ${current}/${t}（P.${pageNumber ?? current}）…`, {
+              current,
+              total: t
+            })
+        });
+        notify(`差异报告已导出：${filename}`, 'success');
+        return {
+          summary: `${res.pageCount} 页视觉对比 · ${formatBytes(res.outputBytes)}`,
+          downloadBlob: res.blob,
+          downloadName: filename
+        };
+      }
+    );
+  },
+
   runPdfToImages: async () => {
     const { sessions, activeId, pdfToImage, pagePlans } = get();
     const session = sessions.find((s) => s.id === activeId);
     if (!session) return;
     const engine = getEngine();
     const plan = snapshotPagePlan(session, pagePlans[session.id]);
-    const prefix = cleanStem(pdfToImage.filename, `${session.file.name.replace(/\.pdf$/i, '')}-图片`);
+    const isLong = pdfToImage.outputMode === 'long-image';
+    const prefix = cleanStem(pdfToImage.filename, `${session.file.name.replace(/\.pdf$/i, '')}-${isLong ? '长图' : '图片'}`);
 
     await useTaskStore.getState().runTask(
-      { kind: 'pdf-to-image', title: `PDF 转图片：${session.file.name}`, initialStage: '正在解析页码…' },
+      { kind: 'pdf-to-image', title: `${isLong ? 'PDF 转长图' : 'PDF 转图片'}：${session.file.name}`, initialStage: '正在解析页码…' },
       async ({ signal, report }) => {
         const pages = engine.PageRange.parsePageSelection(pdfToImage.pages, plan?.length ?? session.numPages);
         const input = pages.map((outputPage) => ({
           ...(plan?.[outputPage - 1] ?? { sourcePage: outputPage, rotation: 0 }),
           outputPage
         }));
+
+        if (isLong) {
+          const res = await engine.PDFProcessor.pdfToLongImage(
+            session,
+            input,
+            {
+              type: pdfToImage.format,
+              quality: pdfToImage.quality,
+              dpi: pdfToImage.dpi,
+              gap: pdfToImage.gap,
+              divider: pdfToImage.divider
+            },
+            {
+              signal,
+              onProgress: ({ stage, current = 1, total = pages.length }) =>
+                report(
+                  stage === 'encode'
+                    ? '正在编码连续长图…'
+                    : `正在拼接第 ${current}/${total}（第 ${pages[current - 1] ?? current} 页）…`,
+                  { current, total }
+                )
+            }
+          );
+          const ext = res.type === 'image/png' ? 'png' : 'jpg';
+          const outName = `${prefix}.${ext}`;
+          useAppStore.getState().notify(`已生成连续长图：${outName}`, 'success');
+          return {
+            summary: `${res.pageCount} 页连续长图 · ${res.width}×${res.height}（${res.effectiveDpi} DPI）· ${formatBytes(res.blob.size)}`,
+            downloadBlob: res.blob,
+            downloadName: outName
+          };
+        }
+
         const res = await engine.PDFProcessor.pdfToImages(
           session,
           input,

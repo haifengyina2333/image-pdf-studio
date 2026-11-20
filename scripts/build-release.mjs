@@ -65,7 +65,8 @@ if (mode === 'all' || mode === 'single') {
     mediapipeLoader: b64(resolve(ROOT, 'public/mediapipe/vision_wasm_internal.js')),
     mediapipeWasm: b64(resolve(ROOT, 'public/mediapipe/vision_wasm_internal.wasm')),
     faceDetectorModel: b64(resolve(ROOT, 'public/mediapipe/blaze_face_full_range.tflite')),
-    faceLandmarkerModel: b64(resolve(ROOT, 'public/mediapipe/face_landmarker.task'))
+    faceLandmarkerModel: b64(resolve(ROOT, 'public/mediapipe/face_landmarker.task')),
+    selfieSegmenterModel: b64(resolve(ROOT, 'public/mediapipe/selfie_segmenter.tflite'))
   };
 
   const html = `<!doctype html>

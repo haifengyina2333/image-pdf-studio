@@ -10,6 +10,7 @@ export interface BackgroundTask {
     | 'image-batch'
     | 'image-copy'
     | 'image-face-detect'
+    | 'image-id-photo'
     | 'image-split'
     | 'image-project'
     | 'pdf-compress'
@@ -17,6 +18,9 @@ export interface BackgroundTask {
     | 'pdf-split'
     | 'pdf-organize'
     | 'pdf-watermark'
+    | 'pdf-sign'
+    | 'pdf-page-numbers'
+    | 'pdf-compare'
     | 'pdf-image-to-pdf'
     | 'pdf-to-image'
     | 'pdf-id-card';

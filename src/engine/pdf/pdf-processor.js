@@ -215,8 +215,283 @@
     } finally { try { canvas.width = 1; canvas.height = 1; } catch {} }
   };
 
+  const pdfToLongImage = async (session, pageNumbers, options = {}, { signal, onProgress, canvasFactory = () => document.createElement('canvas') } = {}) => {
+    if (!session?.file || !session?.numPages || typeof session.renderPage !== 'function') throw new Error('请先选择一个可读取的 PDF。');
+    const pages = (pageNumbers || []).map((item, index) => typeof item === 'object' ? { sourcePage: Number(item.sourcePage), rotation: normalizeRotation(item.rotation || 0), outputPage: Number(item.outputPage) || index + 1 } : { sourcePage: Number(item), rotation: 0, outputPage: Number(item) });
+    if (!pages.length) throw new Error('没有选择要拼接为长图的页面。');
+    const type = options.type === 'image/png' ? 'image/png' : 'image/jpeg';
+    const quality = Math.max(.45, Math.min(.98, Number(options.quality) || .9));
+    const requestedDpi = Math.max(72, Math.min(240, Number(options.dpi) || 144));
+    const gap = Math.max(0, Math.min(80, Math.round(Number(options.gap) ?? 12)));
+    const divider = options.divider !== false;
+    const background = normalizeHex(options.background || '#f1f5f9');
+
+    // Pass 1: inspect page sizes only (no rendering yet) to compute a memory-safe uniform width.
+    const infos = [];
+    for (let i = 0; i < pages.length; i += 1) {
+      const item = pages[i];
+      if (!Number.isInteger(item.sourcePage) || item.sourcePage < 1 || item.sourcePage > session.numPages) throw new Error(`页码必须在 1-${session.numPages} 之间。`);
+      assertNotAborted(signal);
+      const info = await session.getPageInfo(item.sourcePage, signal, item.rotation);
+      infos.push(info);
+    }
+    const maxPtWidth = Math.max(...infos.map((info) => Math.max(1, info.width)));
+    let targetWidth = Math.max(320, Math.round(maxPtWidth * (requestedDpi / 72)));
+    const computeHeights = (w) => infos.map((info) => Math.max(1, Math.round((info.height / Math.max(1, info.width)) * w)));
+    let heights = computeHeights(targetWidth);
+    const totalGaps = gap * Math.max(0, pages.length - 1);
+    let totalHeight = heights.reduce((sum, h) => sum + h, 0) + totalGaps;
+
+    const MAX_CANVAS_HEIGHT = 30_000;
+    const MAX_CANVAS_PIXELS = 42_000_000;
+    const MAX_WIDTH = 4096;
+    if (targetWidth > MAX_WIDTH) {
+      targetWidth = MAX_WIDTH;
+      heights = computeHeights(targetWidth);
+      totalHeight = heights.reduce((sum, h) => sum + h, 0) + totalGaps;
+    }
+    if (totalHeight > MAX_CANVAS_HEIGHT) {
+      const shrink = Math.max(0.15, (MAX_CANVAS_HEIGHT - totalGaps) / Math.max(1, totalHeight - totalGaps));
+      targetWidth = Math.max(240, Math.floor(targetWidth * shrink));
+      heights = computeHeights(targetWidth);
+      totalHeight = heights.reduce((sum, h) => sum + h, 0) + totalGaps;
+    }
+    if (targetWidth * totalHeight > MAX_CANVAS_PIXELS) {
+      const shrink = Math.sqrt(MAX_CANVAS_PIXELS / Math.max(1, targetWidth * totalHeight));
+      targetWidth = Math.max(240, Math.floor(targetWidth * shrink));
+      heights = computeHeights(targetWidth);
+      totalHeight = heights.reduce((sum, h) => sum + h, 0) + totalGaps;
+    }
+    if (totalHeight > 32767) throw new Error(`页数过多导致长图总高度超限（${totalHeight}px），请缩小页码范围分批生成。`);
+
+    const outCanvas = canvasFactory();
+    const pageCanvas = canvasFactory();
+    try {
+      outCanvas.width = targetWidth;
+      outCanvas.height = totalHeight;
+      const outCtx = outCanvas.getContext('2d', { alpha: false });
+      outCtx.fillStyle = background;
+      outCtx.fillRect(0, 0, targetWidth, totalHeight);
+
+      let y = 0;
+      for (let i = 0; i < pages.length; i += 1) {
+        const item = pages[i];
+        const drawH = heights[i];
+        assertNotAborted(signal);
+        onProgress?.({ stage: 'render', current: i + 1, total: pages.length, pageNumber: item.outputPage });
+        await session.renderPage(item.sourcePage, pageCanvas, {
+          maxWidth: targetWidth,
+          maxHeight: drawH + 2,
+          outputScale: 1,
+          background: '#ffffff',
+          intent: 'print',
+          signal,
+          extraRotation: item.rotation,
+          applyInlineStyle: false
+        });
+        assertNotAborted(signal);
+        outCtx.fillStyle = '#ffffff';
+        outCtx.fillRect(0, y, targetWidth, drawH);
+        outCtx.drawImage(pageCanvas, 0, 0, pageCanvas.width, pageCanvas.height, 0, y, targetWidth, drawH);
+        if (divider && i < pages.length - 1) {
+          const lineY = Math.round(y + drawH + gap / 2);
+          outCtx.save();
+          outCtx.strokeStyle = 'rgba(148, 163, 184, 0.45)';
+          outCtx.lineWidth = Math.max(1, Math.round(targetWidth / 900));
+          outCtx.beginPath();
+          outCtx.moveTo(0, lineY);
+          outCtx.lineTo(targetWidth, lineY);
+          outCtx.stroke();
+          outCtx.restore();
+        }
+        y += drawH + gap;
+      }
+
+      onProgress?.({ stage: 'encode', current: pages.length, total: pages.length });
+      const blob = await canvasToBlob(outCanvas, type, type === 'image/png' ? undefined : quality);
+      assertNotAborted(signal);
+      return { blob, width: targetWidth, height: totalHeight, pageCount: pages.length, type, effectiveDpi: Math.round((targetWidth / maxPtWidth) * 72) };
+    } finally {
+      try { pageCanvas.width = 1; pageCanvas.height = 1; } catch {}
+      try { outCanvas.width = 1; outCanvas.height = 1; } catch {}
+    }
+  };
+
+  const signPDF = async (file, pagePlan, placements, { signal, onProgress, pdfLib } = {}) => {
+    if (!file) throw new Error('请先选择一个 PDF。');
+    const items = [...(placements || [])].filter((p) => p && p.stampBytes);
+    if (!items.length) throw new Error('请先在页面上放置至少一个签名或印章。');
+    const lib = await ensurePdfLib(pdfLib);
+    assertNotAborted(signal);
+    const source = await loadSourcePDF(file, lib, '签名盖章');
+    const plan = normalizePagePlan(pagePlan, source.getPageCount());
+    if (!plan.length) throw new Error('至少需要保留一页。');
+    const output = await lib.PDFDocument.create();
+    await copyPlanToDocument(output, source, plan, lib);
+    assertNotAborted(signal);
+
+    const pages = output.getPages();
+    const embeddedCache = new Map();
+    let placedCount = 0;
+
+    for (let i = 0; i < items.length; i += 1) {
+      assertNotAborted(signal);
+      const item = items[i];
+      onProgress?.({ stage: 'sign', current: i + 1, total: items.length });
+      const cacheKey = item.stampId || item.stampBytes;
+      let embedded = embeddedCache.get(cacheKey);
+      if (!embedded) {
+        const bytes = item.stampBytes instanceof Blob ? await item.stampBytes.arrayBuffer() : item.stampBytes;
+        embedded = await output.embedPng(bytes);
+        embeddedCache.set(cacheKey, embedded);
+      }
+      const targetPages = Array.isArray(item.pages) && item.pages.length
+        ? item.pages
+        : [Math.max(1, Math.min(pages.length, Math.round(Number(item.page) || 1)))];
+
+      const widthRatio = Math.max(0.03, Math.min(0.9, Number(item.widthRatio) || 0.22));
+      const xRatio = Math.max(0, Math.min(1, Number(item.xRatio) ?? 0.72));
+      const yRatio = Math.max(0, Math.min(1, Number(item.yRatio) ?? 0.82)); // top-down ratio from UI preview
+      const opacity = Math.max(0.1, Math.min(1, Number(item.opacity) ?? 1));
+      const angle = Number.isFinite(Number(item.rotation)) ? Math.max(-180, Math.min(180, Number(item.rotation))) : 0;
+
+      for (const pageNum of targetPages) {
+        if (pageNum < 1 || pageNum > pages.length) continue;
+        const page = pages[pageNum - 1];
+        const box = displayBox(page);
+        const drawWidth = box.width * widthRatio;
+        const drawHeight = (drawWidth * embedded.height) / Math.max(1, embedded.width);
+        // Convert top-down UI center (xRatio, yRatio) to PDF bottom-up display coordinates.
+        const cx = xRatio * box.width;
+        const cy = (1 - yRatio) * box.height;
+        const { x, y, rotation } = stampPlacement(box, cx, cy, drawWidth, drawHeight, -angle);
+        page.drawImage(embedded, { x, y, width: drawWidth, height: drawHeight, opacity, rotate: degreeValue(lib, rotation) });
+        placedCount += 1;
+      }
+    }
+
+    onProgress?.({ stage: 'save', current: items.length, total: items.length });
+    const bytes = await output.save(saveOptions);
+    assertNotAborted(signal);
+    return { blob: outputBlob(bytes), pageCount: pages.length, placedCount, inputBytes: file.size || 0, outputBytes: bytes.length };
+  };
+
+  const formatPageNumberLabel = (displayNum, displayTotal, format = 'zh-total') => {
+    if (format === 'slash') return `${displayNum} / ${displayTotal}`;
+    if (format === 'plain') return `${displayNum}`;
+    if (format === 'dash') return `- ${displayNum} -`;
+    if (format === 'en') return `Page ${displayNum} of ${displayTotal}`;
+    return `第 ${displayNum} / ${displayTotal} 页`;
+  };
+
+  const renderTextStripPng = async (text, { fontSizePt = 11, color = '#475569', scale = 3, canvasFactory = () => document.createElement('canvas') } = {}) => {
+    const clean = String(text || '').trim();
+    if (!clean) return null;
+    const pxSize = Math.max(12, fontSizePt * scale);
+    const padX = Math.ceil(pxSize * 0.45);
+    const padY = Math.ceil(pxSize * 0.35);
+    const canvas = canvasFactory();
+    const font = `500 ${pxSize}px "PingFang SC", "Microsoft YaHei", "Noto Sans SC", system-ui, sans-serif`;
+    const measureCtx = canvas.getContext('2d');
+    measureCtx.font = font;
+    const textWidth = Math.max(1, Math.ceil(measureCtx.measureText(clean).width));
+    canvas.width = textWidth + padX * 2;
+    canvas.height = Math.ceil(pxSize * 1.35) + padY * 2;
+    const ctx = canvas.getContext('2d');
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    ctx.font = font;
+    ctx.fillStyle = /^#[0-9a-f]{6}$/i.test(color) ? color : '#475569';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(clean, canvas.width / 2, canvas.height / 2);
+    const blob = await canvasToBlob(canvas, 'image/png');
+    const ptWidth = canvas.width / scale;
+    const ptHeight = canvas.height / scale;
+    try { canvas.width = 1; canvas.height = 1; } catch {}
+    return { bytes: await blob.arrayBuffer(), widthPt: ptWidth, heightPt: ptHeight };
+  };
+
+  const addHeaderFooterPDF = async (file, pagePlan, options = {}, { signal, onProgress, pdfLib, canvasFactory = () => document.createElement('canvas') } = {}) => {
+    if (!file) throw new Error('请先选择一个 PDF。');
+    const pageNumberEnabled = options.pageNumberEnabled !== false;
+    const headerText = String(options.headerText || '').trim();
+    const footerText = String(options.footerText || '').trim();
+    if (!pageNumberEnabled && !headerText && !footerText) {
+      throw new Error('请至少开启页码或填写页眉 / 页脚文字。');
+    }
+    const lib = await ensurePdfLib(pdfLib);
+    assertNotAborted(signal);
+    const source = await loadSourcePDF(file, lib, '添加页码与页眉页脚');
+    const plan = normalizePagePlan(pagePlan, source.getPageCount());
+    if (!plan.length) throw new Error('至少需要保留一页。');
+    const output = await lib.PDFDocument.create();
+    await copyPlanToDocument(output, source, plan, lib);
+    assertNotAborted(signal);
+
+    const pages = output.getPages();
+    const targetPages = new Set((options.pages || originalPlan(pages.length).map((p) => p.sourcePage)).map(Number));
+    const skipFirstPage = Boolean(options.skipFirstPage);
+    const startNumber = Math.max(0, Math.round(Number(options.startNumber) ?? 1));
+    const fontSizePt = Math.max(7, Math.min(28, Number(options.fontSize) || 11));
+    const marginPt = Math.max(4, Math.min(40, Number(options.marginMm) || 12)) * 72 / 25.4;
+    const color = /^#[0-9a-f]{6}$/i.test(options.color || '') ? options.color : '#475569';
+    const position = String(options.position || 'bottom-center');
+    const headerAlign = ['left', 'center', 'right'].includes(options.headerAlign) ? options.headerAlign : 'center';
+    const footerAlign = ['left', 'center', 'right'].includes(options.footerAlign) ? options.footerAlign : 'left';
+    const format = String(options.format || 'zh-total');
+
+    const headerStrip = headerText ? await renderTextStripPng(headerText, { fontSizePt, color, canvasFactory }) : null;
+    const footerStrip = footerText ? await renderTextStripPng(footerText, { fontSizePt, color, canvasFactory }) : null;
+    const embeddedHeader = headerStrip ? await output.embedPng(headerStrip.bytes) : null;
+    const embeddedFooter = footerStrip ? await output.embedPng(footerStrip.bytes) : null;
+
+    const placeStrip = (page, box, embedded, widthPt, heightPt, align, vertical) => {
+      const clampedW = Math.min(widthPt, Math.max(20, box.width - marginPt * 2));
+      const clampedH = heightPt * (clampedW / Math.max(1, widthPt));
+      const cx = align === 'left' ? marginPt + clampedW / 2 : align === 'right' ? box.width - marginPt - clampedW / 2 : box.width / 2;
+      const cy = vertical === 'top' ? box.height - marginPt : marginPt;
+      const { x, y, rotation } = stampPlacement(box, cx, cy, clampedW, clampedH, 0);
+      page.drawImage(embedded, { x, y, width: clampedW, height: clampedH, rotate: degreeValue(lib, rotation) });
+    };
+
+    const effectiveTotal = Math.max(1, pages.length - (skipFirstPage ? 1 : 0)) + startNumber - 1;
+    let appliedCount = 0;
+    for (let i = 0; i < pages.length; i += 1) {
+      const pageIndex = i + 1;
+      assertNotAborted(signal);
+      if ((skipFirstPage && pageIndex === 1) || !targetPages.has(pageIndex)) continue;
+      onProgress?.({ stage: 'stamp', current: pageIndex, total: pages.length });
+      const page = pages[i];
+      const box = displayBox(page);
+
+      if (embeddedHeader && headerStrip) {
+        placeStrip(page, box, embeddedHeader, headerStrip.widthPt, headerStrip.heightPt, headerAlign, 'top');
+      }
+      if (embeddedFooter && footerStrip) {
+        placeStrip(page, box, embeddedFooter, footerStrip.widthPt, footerStrip.heightPt, footerAlign, 'bottom');
+      }
+      if (pageNumberEnabled) {
+        const displayNum = startNumber + i - (skipFirstPage ? 1 : 0);
+        const label = formatPageNumberLabel(displayNum, effectiveTotal, format);
+        const strip = await renderTextStripPng(label, { fontSizePt, color, canvasFactory });
+        if (strip) {
+          const embeddedNum = await output.embedPng(strip.bytes);
+          const [vert, align] = position.split('-');
+          placeStrip(page, box, embeddedNum, strip.widthPt, strip.heightPt, align || 'center', vert === 'top' ? 'top' : 'bottom');
+        }
+      }
+      appliedCount += 1;
+    }
+
+    onProgress?.({ stage: 'save', current: pages.length, total: pages.length });
+    const bytes = await output.save(saveOptions);
+    assertNotAborted(signal);
+    return { blob: outputBlob(bytes), pageCount: pages.length, appliedCount, inputBytes: file.size || 0, outputBytes: bytes.length };
+  };
+
   ns.PDFProcessor = {
-    COMPRESSION_PROFILES, PAGE_SIZES, profileFor, normalizePagePlan, pageDimensionsFor,
-    mergePDFs, compressPDF, optimizePDF, watermarkPDF, savePagePlan, createPDFParts, imagesToPDF, pdfToImages
+    COMPRESSION_PROFILES, PAGE_SIZES, profileFor, normalizePagePlan, pageDimensionsFor, formatPageNumberLabel,
+    mergePDFs, compressPDF, optimizePDF, watermarkPDF, savePagePlan, createPDFParts, imagesToPDF, pdfToImages,
+    pdfToLongImage, signPDF, addHeaderFooterPDF
   };
 })();

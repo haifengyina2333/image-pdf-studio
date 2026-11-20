@@ -8,6 +8,8 @@ import {
   FaceRedactionOptions,
   formatBytes,
   getEngine,
+  PortraitMaskData,
+  RedactBoxKind,
   StitchOptions,
   triggerBlobDownload,
   WatermarkOptions,
@@ -20,6 +22,7 @@ import { useTaskStore } from './useTaskStore';
 export type ImageToolId =
   | 'watermark'
   | 'redact'
+  | 'id-photo'
   | 'compress'
   | 'resize'
   | 'transform'
@@ -27,6 +30,16 @@ export type ImageToolId =
   | 'stitch'
   | 'split'
   | 'convert';
+
+export interface IdPhotoConfig {
+  bgColor: string;
+  preset: string;
+  zoom: number;
+  offsetX: number;
+  offsetY: number;
+  feather: number;
+  threshold: number;
+}
 
 export interface ImageQueueItem {
   id: string;
@@ -46,8 +59,9 @@ export interface ImageExportConfig {
 type ToolEncoding = Pick<ImageExportConfig, 'format' | 'quality'>;
 
 export interface CompressConfig {
-  profile: 'high' | 'balanced' | 'strong' | 'custom';
+  profile: 'high' | 'balanced' | 'strong' | 'target' | 'custom';
   maxEdge: number;
+  targetKB: number;
 }
 
 export interface ResizeConfig {
@@ -101,10 +115,22 @@ export const DEFAULT_REDACT: FaceRedactionOptions = {
   emoji: '😎',
   sticker: '',
   stickerImage: null,
-  expressionMode: 'auto'
+  expressionMode: 'auto',
+  annotationColor: '#ef4444',
+  annotationWidth: 5
 };
 
-export const DEFAULT_COMPRESS: CompressConfig = { profile: 'balanced', maxEdge: 2560 };
+export const DEFAULT_ID_PHOTO: IdPhotoConfig = {
+  bgColor: '#438edb',
+  preset: '1inch',
+  zoom: 1,
+  offsetX: 0,
+  offsetY: 0,
+  feather: 1.5,
+  threshold: 0.45
+};
+
+export const DEFAULT_COMPRESS: CompressConfig = { profile: 'balanced', maxEdge: 2560, targetKB: 200 };
 export const DEFAULT_RESIZE: ResizeConfig = { mode: 'width', value: 1080, width: 1920, height: 1080, keepRatio: true };
 export const DEFAULT_TRANSFORM: TransformConfig = { rotation: 0, flipX: false, flipY: false };
 export const DEFAULT_CROP: CropConfig = { rect: { x: 0.08, y: 0.08, width: 0.84, height: 0.84 }, ratio: 0 };
@@ -156,11 +182,15 @@ interface ImageStoreState {
   wmPresetsLoaded: boolean;
 
   redact: FaceRedactionOptions;
+  redactDrawMode: RedactBoxKind;
   redactDetectMode: 'group' | 'standard';
   redactConfidence: number;
   stickerName: string;
   facesByItemId: Record<string, FaceBox[]>;
   selectedFaceId: string | null;
+
+  idPhoto: IdPhotoConfig;
+  portraitMaskByItemId: Record<string, PortraitMaskData>;
 
   compress: CompressConfig;
   resize: ResizeConfig;
@@ -192,14 +222,22 @@ interface ImageStoreState {
   importWatermarkPresets: (file: File) => Promise<void>;
 
   patchRedact: (patch: Partial<FaceRedactionOptions>) => void;
+  setRedactDrawMode: (mode: RedactBoxKind) => void;
   setRedactDetectMode: (mode: 'group' | 'standard') => void;
   setRedactConfidence: (conf: number) => void;
   setSelectedFaceId: (id: string | null) => void;
   detectFacesForCurrent: () => Promise<void>;
-  addManualFace: (rect?: { x: number; y: number; width: number; height: number }) => void;
+  addManualFace: (
+    rect?: { x: number; y: number; width: number; height: number; x1?: number; y1?: number; x2?: number; y2?: number },
+    kindOverride?: RedactBoxKind
+  ) => void;
   updateFace: (faceId: string, patch: Partial<FaceBox>) => void;
   removeFace: (faceId: string) => void;
   clearFacesForCurrent: () => void;
+
+  patchIdPhoto: (patch: Partial<IdPhotoConfig>) => void;
+  segmentPortraitForCurrent: () => Promise<void>;
+  clearPortraitMaskForCurrent: () => void;
 
   patchCompress: (patch: Partial<CompressConfig>) => void;
   patchResize: (patch: Partial<ResizeConfig>) => void;
@@ -286,7 +324,7 @@ const processSingleItem = async (
   state: ImageStoreState,
   overrideFormat?: string,
   signal?: AbortSignal
-): Promise<{ blob: Blob; width: number; height: number; ext: string }> => {
+): Promise<{ blob: Blob; width: number; height: number; ext: string; note?: string }> => {
   const engine = getEngine();
   const scope = new engine.ResourceScope();
   const mime = overrideFormat || state.exportConfig.format;
@@ -306,7 +344,7 @@ const processSingleItem = async (
         scope,
         signal
       });
-      return { ...res, ext: extForMime(mime) };
+      return { ...res, ext: res.extension || extForMime(res.blob.type || mime) };
     }
     if (state.tool === 'redact') {
       const faces = state.facesByItemId[item.id] ?? [];
@@ -314,8 +352,8 @@ const processSingleItem = async (
       if (!activeFaces.length) {
         throw new Error(
           faces.length
-            ? `「${item.name}」的打码区域已全部关闭，请至少启用一个区域后再导出。`
-            : `「${item.name}」还没有打码区域，请先点击「AI 自动识别人脸」或手动框选后再导出。`
+            ? `「${item.name}」的打码/标注区域已全部关闭，请至少启用一个区域后再导出。`
+            : `「${item.name}」还没有打码或标注区域，请先点击「AI 自动识别人脸」或手动框选后再导出。`
         );
       }
       const res = await engine.FaceRedactor.processImage({
@@ -328,9 +366,45 @@ const processSingleItem = async (
         scope,
         signal
       });
-      return { ...res, ext: extForMime(mime) };
+      return { ...res, ext: res.extension || extForMime(res.blob.type || mime) };
+    }
+    if (state.tool === 'id-photo') {
+      let maskData = state.portraitMaskByItemId[item.id] ?? null;
+      if (!maskData) {
+        maskData = await engine.PortraitSegmenter.segmentPortrait(file, { signal });
+        useImageStore.setState((prev) => ({
+          portraitMaskByItemId: { ...prev.portraitMaskByItemId, [item.id]: maskData! }
+        }));
+      }
+      const res = await engine.PortraitSegmenter.exportIdPhoto({
+        file,
+        maskData,
+        options: state.idPhoto,
+        type: mime,
+        quality,
+        scope,
+        signal
+      });
+      return { blob: res.blob, width: res.width, height: res.height, ext: res.extension || extForMime(res.outputType || mime), note: res.presetLabel };
     }
     if (state.tool === 'compress') {
+      if (state.compress.profile === 'target') {
+        const res = await engine.ImageCompressor.compressToTargetBytes({
+          file,
+          dimensions: dims,
+          targetBytes: Math.max(20, state.compress.targetKB) * 1024,
+          options: { type: mime, maxEdge: state.compress.maxEdge },
+          scope,
+          signal
+        });
+        return {
+          blob: res.blob,
+          width: res.width,
+          height: res.height,
+          ext: res.extension || extForMime(res.outputType || mime),
+          note: res.strategy
+        };
+      }
       const profile = engine.CompressionModel.profiles[state.compress.profile];
       const maxEdge = state.compress.profile === 'custom' ? state.compress.maxEdge : profile?.maxEdge ?? 2560;
       const q = Math.max(0.4, Math.min(1, state.exportConfig.quality));
@@ -341,7 +415,7 @@ const processSingleItem = async (
         scope,
         signal
       });
-      return { blob: res.blob, width: res.width, height: res.height, ext: extForMime(res.outputType || mime) };
+      return { blob: res.blob, width: res.width, height: res.height, ext: res.extension || extForMime(res.outputType || mime) };
     }
     if (state.tool === 'resize') {
       const res = await engine.ImageResizer.resizeImage({
@@ -353,7 +427,7 @@ const processSingleItem = async (
         scope,
         signal
       });
-      return { ...res, ext: extForMime(mime) };
+      return { ...res, ext: res.extension || extForMime(res.blob.type || mime) };
     }
     if (state.tool === 'transform') {
       const res = await engine.ImageTransformer.transformImage({
@@ -365,7 +439,7 @@ const processSingleItem = async (
         scope,
         signal
       });
-      return { ...res, ext: extForMime(mime) };
+      return { ...res, ext: res.extension || extForMime(res.blob.type || mime) };
     }
     if (state.tool === 'crop') {
       const activeId = state.selectedId ?? state.items[0]?.id;
@@ -382,7 +456,7 @@ const processSingleItem = async (
         scope,
         signal
       });
-      return { ...res, ext: extForMime(mime) };
+      return { ...res, ext: res.extension || extForMime(res.blob.type || mime) };
     }
     // convert (or fallback)
     const res = await engine.ImageConverter.convertImage({
@@ -395,7 +469,7 @@ const processSingleItem = async (
       scope,
       signal
     });
-    return { ...res, ext: extForMime(mime) };
+    return { ...res, ext: res.extension || extForMime(res.blob.type || mime) };
   } finally {
     scope.dispose();
   }
@@ -414,11 +488,15 @@ export const useImageStore = create<ImageStoreState>((set, get) => ({
   wmPresetsLoaded: false,
 
   redact: { ...DEFAULT_REDACT },
+  redactDrawMode: 'redact',
   redactDetectMode: 'group',
   redactConfidence: 0.35,
   stickerName: '',
   facesByItemId: {},
   selectedFaceId: null,
+
+  idPhoto: { ...DEFAULT_ID_PHOTO },
+  portraitMaskByItemId: {},
 
   compress: { ...DEFAULT_COMPRESS },
   resize: { ...DEFAULT_RESIZE },
@@ -562,6 +640,8 @@ export const useImageStore = create<ImageStoreState>((set, get) => ({
       const next = state.items.filter((i) => i.id !== id);
       const nextFaces = { ...state.facesByItemId };
       delete nextFaces[id];
+      const nextMasks = { ...state.portraitMaskByItemId };
+      delete nextMasks[id];
       const nextSelected = state.selectedId === id ? next[0]?.id ?? null : state.selectedId;
       const nextItem = next.find((i) => i.id === nextSelected);
       const nextCrop =
@@ -571,6 +651,7 @@ export const useImageStore = create<ImageStoreState>((set, get) => ({
       return {
         items: next,
         facesByItemId: nextFaces,
+        portraitMaskByItemId: nextMasks,
         selectedFaceId: null,
         selectedId: nextSelected,
         crop: nextCrop
@@ -581,7 +662,7 @@ export const useImageStore = create<ImageStoreState>((set, get) => ({
   clearItems: () => {
     importGeneration += 1;
     get().items.forEach((i) => i.decoded.dispose?.());
-    set({ items: [], selectedId: null, facesByItemId: {}, selectedFaceId: null });
+    set({ items: [], selectedId: null, facesByItemId: {}, portraitMaskByItemId: {}, selectedFaceId: null });
     useAppStore.getState().notify('已清空图片队列');
   },
 
@@ -725,6 +806,7 @@ export const useImageStore = create<ImageStoreState>((set, get) => ({
 
   // --- Face Redaction ---
   patchRedact: (patch) => set((s) => ({ redact: { ...s.redact, ...patch } })),
+  setRedactDrawMode: (mode) => set({ redactDrawMode: mode }),
   setRedactDetectMode: (redactDetectMode) => set({ redactDetectMode }),
   setRedactConfidence: (redactConfidence) => set({ redactConfidence }),
   setSelectedFaceId: (selectedFaceId) => set({ selectedFaceId }),
@@ -768,16 +850,47 @@ export const useImageStore = create<ImageStoreState>((set, get) => ({
     );
   },
 
-  addManualFace: (rect) => {
+  addManualFace: (rect, kindOverride) => {
     const s = get();
     const active = s.items.find((i) => i.id === s.selectedId) ?? s.items[0];
     if (!active) return;
+    const kind = kindOverride || s.redactDrawMode || 'redact';
+    const defaultRect =
+      kind === 'bar'
+        ? { x: 0.25, y: 0.45, width: 0.5, height: 0.08 }
+        : kind === 'arrow'
+          ? { x: 0.3, y: 0.35, width: 0.28, height: 0.16, x1: 0.3, y1: 0.35, x2: 0.58, y2: 0.51 }
+          : kind === 'highlight'
+            ? { x: 0.3, y: 0.35, width: 0.36, height: 0.2 }
+            : { x: 0.38, y: 0.34, width: 0.24, height: 0.28 };
+    const merged = { ...defaultRect, ...rect };
     const box = getEngine().FaceRedactor.normalizeBox({
       id: `manual-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`,
-      x: rect?.x ?? 0.38,
-      y: rect?.y ?? 0.34,
-      width: rect?.width ?? 0.24,
-      height: rect?.height ?? 0.28,
+      kind,
+      x: merged.x,
+      y: merged.y,
+      width: merged.width,
+      height: merged.height,
+      ...(kind === 'arrow'
+        ? {
+            x1: merged.x1 ?? merged.x,
+            y1: merged.y1 ?? merged.y,
+            x2: merged.x2 ?? merged.x + merged.width,
+            y2: merged.y2 ?? merged.y + merged.height
+          }
+        : {}),
+      ...(kind === 'highlight' || kind === 'arrow'
+        ? {
+            strokeColor: s.redact.annotationColor || '#ef4444',
+            strokeWidth: s.redact.annotationWidth || 5
+          }
+        : {}),
+      ...(kind === 'bar'
+        ? {
+            barStyle: s.redact.style === 'emoji' ? 'solid' : s.redact.style,
+            color: s.redact.color
+          }
+        : {}),
       enabled: true,
       source: 'manual',
       expression: 'neutral',
@@ -825,13 +938,44 @@ export const useImageStore = create<ImageStoreState>((set, get) => ({
       facesByItemId: { ...s.facesByItemId, [active.id]: [] },
       selectedFaceId: null
     });
-    useAppStore.getState().notify('已清空当前图片的打码区域');
+    useAppStore.getState().notify('已清空当前图片的打码与标注区域');
+  },
+
+  patchIdPhoto: (patch) => set((s) => ({ idPhoto: { ...s.idPhoto, ...patch } })),
+
+  segmentPortraitForCurrent: async () => {
+    const s = get();
+    const active = s.items.find((i) => i.id === s.selectedId) ?? s.items[0];
+    if (!active) return;
+    const engine = getEngine();
+    await useTaskStore.getState().runTask(
+      { kind: 'image-id-photo', title: `AI 人像抠图：${active.name}`, initialStage: '正在加载本地 AI 抠图模型…' },
+      async ({ signal, report }) => {
+        report('正在分离人像与背景…');
+        const mask = await engine.PortraitSegmenter.segmentPortrait(active.decoded.file, { signal });
+        set((prev) => ({
+          portraitMaskByItemId: { ...prev.portraitMaskByItemId, [active.id]: mask }
+        }));
+        useAppStore.getState().notify('本地 AI 抠图完成，可自由切换底色与证件照尺寸', 'success');
+        return { summary: `抠图完成（${mask.width}×${mask.height} 遮罩）` };
+      }
+    );
+  },
+
+  clearPortraitMaskForCurrent: () => {
+    const s = get();
+    const active = s.items.find((i) => i.id === s.selectedId) ?? s.items[0];
+    if (!active) return;
+    const next = { ...s.portraitMaskByItemId };
+    delete next[active.id];
+    set({ portraitMaskByItemId: next });
+    useAppStore.getState().notify('已清除当前图片的抠图结果');
   },
 
   patchCompress: (patch) =>
     set((s) => {
       const nextCompress = { ...s.compress, ...patch };
-      if (patch.profile && patch.profile !== 'custom') {
+      if (patch.profile && patch.profile !== 'custom' && patch.profile !== 'target') {
         const prof = getEngine().CompressionModel.profiles[patch.profile];
         if (prof) {
           return {
@@ -839,6 +983,12 @@ export const useImageStore = create<ImageStoreState>((set, get) => ({
             exportConfig: { ...s.exportConfig, format: 'image/jpeg', quality: prof.quality / 100 }
           };
         }
+      }
+      if (patch.profile === 'target' && s.exportConfig.format === 'image/png') {
+        return {
+          compress: nextCompress,
+          exportConfig: { ...s.exportConfig, format: 'image/jpeg' }
+        };
       }
       return { compress: nextCompress };
     }),
@@ -863,7 +1013,9 @@ export const useImageStore = create<ImageStoreState>((set, get) => ({
         ? { ...s.watermark }
         : t === 'redact'
           ? { ...s.redact }
-          : t === 'compress'
+          : t === 'id-photo'
+            ? { ...s.idPhoto }
+            : t === 'compress'
             ? { compress: { ...s.compress }, format: s.exportConfig.format, quality: s.exportConfig.quality }
             : t === 'resize'
               ? { ...s.resize }
@@ -886,7 +1038,10 @@ export const useImageStore = create<ImageStoreState>((set, get) => ({
       useAppStore.getState().notify('已重置水印外观与位置（保留已输入文字）');
     } else if (t === 'redact') {
       set({ undoByTool: nextUndo, redact: { ...DEFAULT_REDACT } });
-      useAppStore.getState().notify('已重置打码样式参数');
+      useAppStore.getState().notify('已重置打码与标注参数');
+    } else if (t === 'id-photo') {
+      set({ undoByTool: nextUndo, idPhoto: { ...DEFAULT_ID_PHOTO } });
+      useAppStore.getState().notify('已重置证件照底色与构图');
     } else if (t === 'compress') {
       set({
         undoByTool: nextUndo,
@@ -924,6 +1079,7 @@ export const useImageStore = create<ImageStoreState>((set, get) => ({
     delete nextUndo[t];
     if (t === 'watermark') set({ undoByTool: nextUndo, watermark: snap as WatermarkOptions });
     else if (t === 'redact') set({ undoByTool: nextUndo, redact: snap as FaceRedactionOptions });
+    else if (t === 'id-photo') set({ undoByTool: nextUndo, idPhoto: snap as IdPhotoConfig });
     else if (t === 'compress') {
       const cSnap = snap as { compress: CompressConfig; format: ImageExportConfig['format']; quality: number };
       set({
@@ -1162,7 +1318,9 @@ export const useImageStore = create<ImageStoreState>((set, get) => ({
         const delta = active.size ? Math.round((1 - res.blob.size / active.size) * 100) : 0;
         useAppStore.getState().notify(`已导出：${filename}`, 'success');
         return {
-          summary: `${res.width}×${res.height} · ${formatBytes(active.size)} → ${formatBytes(res.blob.size)}${delta > 0 ? `（-${delta}%）` : ''}`,
+          summary: res.note
+            ? `${res.note} · ${formatBytes(active.size)} → ${formatBytes(res.blob.size)}`
+            : `${res.width}×${res.height} · ${formatBytes(active.size)} → ${formatBytes(res.blob.size)}${delta > 0 ? `（-${delta}%）` : ''}`,
           downloadBlob: res.blob,
           downloadName: filename
         };

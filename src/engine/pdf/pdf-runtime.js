@@ -60,15 +60,25 @@
       try { assertNotAborted(signal); const rotation = (((Number(page.rotate || 0) + Number(extraRotation || 0)) % 360) + 360) % 360; const viewport = page.getViewport({ scale: 1, rotation }); return { pageNumber: selected, width: viewport.width, height: viewport.height, rotation, widthMm: viewport.width * 25.4 / 72, heightMm: viewport.height * 25.4 / 72 }; }
       finally { try { page.cleanup?.(true); } catch {} }
     }
-    async renderPage(number, canvas, { maxWidth = 1400, maxHeight = 1800, outputScale = Math.min(2, Math.max(1, window.devicePixelRatio || 1)), background = '#ffffff', intent = 'display', signal, extraRotation = 0 } = {}) {
-      this.assertOpen(); assertNotAborted(signal); const selected = pageNumber(number, this.numPages); const page = await this.document.getPage(selected); let task;
+    async renderPage(number, canvas, { maxWidth = 1400, maxHeight = 1800, outputScale = Math.min(2, Math.max(1, window.devicePixelRatio || 1)), background = '#ffffff', intent = 'display', signal, extraRotation = 0, applyInlineStyle = true, doubleBuffer = false } = {}) {
+      this.assertOpen(); assertNotAborted(signal); const selected = pageNumber(number, this.numPages); const page = await this.document.getPage(selected); let task; let bufferCanvas = null;
       try {
-        assertNotAborted(signal); const rotation = (((Number(page.rotate || 0) + Number(extraRotation || 0)) % 360) + 360) % 360; const base = page.getViewport({ scale: 1, rotation }); const fit = Math.min(maxWidth / base.width, maxHeight / base.height); const viewport = page.getViewport({ scale: fit * outputScale, rotation }); const cssWidth = Math.max(1, Math.round(viewport.width / outputScale)), cssHeight = Math.max(1, Math.round(viewport.height / outputScale)); canvas.width = Math.max(1, Math.floor(viewport.width)); canvas.height = Math.max(1, Math.floor(viewport.height)); canvas.style.width = `${cssWidth}px`; canvas.style.height = `${cssHeight}px`; const context = canvas.getContext('2d', { alpha: false }); context.save?.(); context.fillStyle = background; context.fillRect(0, 0, canvas.width, canvas.height); context.restore?.();
+        assertNotAborted(signal); const rotation = (((Number(page.rotate || 0) + Number(extraRotation || 0)) % 360) + 360) % 360; const base = page.getViewport({ scale: 1, rotation }); const fit = Math.min(maxWidth / base.width, maxHeight / base.height); const viewport = page.getViewport({ scale: fit * outputScale, rotation }); const cssWidth = Math.max(1, Math.round(viewport.width / outputScale)), cssHeight = Math.max(1, Math.round(viewport.height / outputScale)); const targetWidth = Math.max(1, Math.floor(viewport.width)), targetHeight = Math.max(1, Math.floor(viewport.height));
+        const drawTarget = doubleBuffer && typeof document !== 'undefined' && typeof document.createElement === 'function' ? (bufferCanvas = document.createElement('canvas')) : canvas;
+        drawTarget.width = targetWidth; drawTarget.height = targetHeight;
+        if (!doubleBuffer && applyInlineStyle && canvas.style) { canvas.style.width = `${cssWidth}px`; canvas.style.height = `${cssHeight}px`; }
+        const context = drawTarget.getContext('2d', { alpha: false }); context.save?.(); context.fillStyle = background; context.fillRect(0, 0, drawTarget.width, drawTarget.height); context.restore?.();
         task = page.render({ canvasContext: context, viewport, background, intent }); this.renderTasks.add(task); const cancel = () => { try { task.cancel?.(); } catch {} }; signal?.addEventListener('abort', cancel, { once: true });
         try { await task.promise; } finally { signal?.removeEventListener('abort', cancel); this.renderTasks.delete(task); }
-        assertNotAborted(signal); return { pageNumber: selected, width: base.width, height: base.height, rotation, renderedWidth: canvas.width, renderedHeight: canvas.height, cssWidth, cssHeight };
+        assertNotAborted(signal);
+        if (bufferCanvas) {
+          canvas.width = targetWidth; canvas.height = targetHeight;
+          if (applyInlineStyle && canvas.style) { canvas.style.width = `${cssWidth}px`; canvas.style.height = `${cssHeight}px`; }
+          canvas.getContext('2d', { alpha: false }).drawImage(bufferCanvas, 0, 0);
+        }
+        return { pageNumber: selected, width: base.width, height: base.height, rotation, renderedWidth: targetWidth, renderedHeight: targetHeight, cssWidth, cssHeight };
       } catch (error) { if (signal?.aborted || /RenderingCancelled/i.test(error?.name || '')) throw abortError(); throw normalizeError(error, this.file.name); }
-      finally { if (task) this.renderTasks.delete(task); try { page.cleanup?.(true); } catch {} }
+      finally { if (bufferCanvas) { try { bufferCanvas.width = 1; bufferCanvas.height = 1; } catch {} } if (task) this.renderTasks.delete(task); try { page.cleanup?.(true); } catch {} }
     }
     async dispose() {
       if (this.disposed) return; this.disposed = true; this.renderTasks.forEach((task) => { try { task.cancel?.(); } catch {} }); this.renderTasks.clear();

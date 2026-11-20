@@ -24,9 +24,11 @@ import '../engine/image/image-splitter.js';
 import '../engine/image/face-expression.js';
 import '../engine/image/face-detector.js';
 import '../engine/image/face-redactor.js';
+import '../engine/image/portrait-segmenter.js';
 import '../engine/pdf/page-range.js';
 import '../engine/pdf/pdf-runtime.js';
 import '../engine/pdf/pdf-processor.js';
+import '../engine/pdf/pdf-compare.js';
 import '../engine/pdf/id-card-sheet.js';
 
 export interface DecodedImage {
@@ -100,12 +102,23 @@ export interface WatermarkPresetRecord {
   updatedAt: number;
 }
 
+export type RedactBoxKind = 'redact' | 'bar' | 'highlight' | 'arrow';
+
 export interface FaceBox {
   id: string;
+  kind?: RedactBoxKind;
   x: number;
   y: number;
   width: number;
   height: number;
+  x1?: number;
+  y1?: number;
+  x2?: number;
+  y2?: number;
+  strokeColor?: string;
+  strokeWidth?: number;
+  barStyle?: 'mosaic' | 'blur' | 'solid';
+  color?: string;
   enabled: boolean;
   source: 'auto' | 'manual';
   confidence?: number | null;
@@ -126,6 +139,30 @@ export interface FaceRedactionOptions {
   sticker: string;
   stickerImage: HTMLImageElement | null;
   expressionMode: string;
+  annotationColor?: string;
+  annotationWidth?: number;
+}
+
+export interface PortraitMaskData {
+  mask: Float32Array;
+  width: number;
+  height: number;
+}
+
+export interface PortraitPresetInfo {
+  id: string;
+  label: string;
+  desc: string;
+  width: number;
+  height: number;
+}
+
+export interface PdfComparePageResult {
+  page: number;
+  hasDiff: boolean;
+  diffRatio: number;
+  diffPixels: number;
+  status: 'same' | 'changed' | 'added' | 'removed';
 }
 
 export interface SplitRect {
@@ -277,7 +314,7 @@ interface ToolboxGlobal {
       outputSize: { width: number; height: number };
       scope: ResourceScopeLike;
       signal?: AbortSignal;
-    }) => Promise<{ blob: Blob; width: number; height: number }>;
+    }) => Promise<{ blob: Blob; width: number; height: number; extension?: string }>;
   };
   CompressionModel: {
     profiles: Record<string, { label: string; quality: number; maxEdge: number }>;
@@ -292,7 +329,65 @@ interface ToolboxGlobal {
       options: { type: string; quality: number; maxEdge: number };
       scope: ResourceScopeLike;
       signal?: AbortSignal;
-    }) => Promise<{ blob: Blob; width: number; height: number; outputType: string }>;
+    }) => Promise<{ blob: Blob; width: number; height: number; outputType: string; extension?: string; strategy?: string }>;
+    compressToTargetBytes: (params: {
+      file: File;
+      dimensions: { width: number; height: number };
+      targetBytes: number;
+      options?: { type?: string; maxEdge?: number };
+      scope: ResourceScopeLike;
+      signal?: AbortSignal;
+    }) => Promise<{
+      blob: Blob;
+      width: number;
+      height: number;
+      outputType: string;
+      extension: string;
+      targetBytes: number;
+      metTarget: boolean;
+      qualityUsed: number;
+      strategy: string;
+    }>;
+  };
+  PortraitSegmenter: {
+    PRESETS: PortraitPresetInfo[];
+    BG_COLORS: { id: string; label: string; value: string }[];
+    presetById: (id: string) => PortraitPresetInfo;
+    outputDimensionsFor: (sourceDims: { width: number; height: number }, presetId?: string) => { width: number; height: number; preset: PortraitPresetInfo };
+    segmentPortrait: (source: Blob | HTMLImageElement | HTMLCanvasElement, options?: { signal?: AbortSignal }) => Promise<PortraitMaskData>;
+    renderIdPhoto: (
+      ctx: CanvasRenderingContext2D,
+      source: CanvasImageSource,
+      maskData: PortraitMaskData | null,
+      options: {
+        bgColor: string;
+        preset?: string;
+        zoom?: number;
+        offsetX?: number;
+        offsetY?: number;
+        feather?: number;
+        threshold?: number;
+        showCheckerboard?: boolean;
+      }
+    ) => void;
+    exportIdPhoto: (params: {
+      file: File;
+      maskData: PortraitMaskData | null;
+      options: {
+        bgColor: string;
+        preset: string;
+        zoom: number;
+        offsetX: number;
+        offsetY: number;
+        feather: number;
+        threshold: number;
+      };
+      type: string;
+      quality?: number;
+      scope: ResourceScopeLike;
+      signal?: AbortSignal;
+    }) => Promise<{ blob: Blob; width: number; height: number; outputType: string; extension: string; presetLabel: string }>;
+    close: () => Promise<void>;
   };
   ImageConverter: {
     convertImage: (params: {
@@ -303,7 +398,7 @@ interface ToolboxGlobal {
       background?: string;
       scope: ResourceScopeLike;
       signal?: AbortSignal;
-    }) => Promise<{ blob: Blob; width: number; height: number }>;
+    }) => Promise<{ blob: Blob; width: number; height: number; extension?: string }>;
   };
   ImageResizer: {
     sizeFor: (
@@ -322,7 +417,7 @@ interface ToolboxGlobal {
       quality?: number;
       scope: ResourceScopeLike;
       signal?: AbortSignal;
-    }) => Promise<{ blob: Blob; width: number; height: number }>;
+    }) => Promise<{ blob: Blob; width: number; height: number; extension?: string }>;
   };
   ImageTransformer: {
     transformImage: (params: {
@@ -333,7 +428,7 @@ interface ToolboxGlobal {
       quality?: number;
       scope: ResourceScopeLike;
       signal?: AbortSignal;
-    }) => Promise<{ blob: Blob; width: number; height: number }>;
+    }) => Promise<{ blob: Blob; width: number; height: number; extension?: string }>;
   };
   ImageCropper: {
     normalizeCrop: (crop: CropRect, dimensions: { width: number; height: number }) => CropRect;
@@ -347,7 +442,7 @@ interface ToolboxGlobal {
       quality?: number;
       scope: ResourceScopeLike;
       signal?: AbortSignal;
-    }) => Promise<{ blob: Blob; width: number; height: number }>;
+    }) => Promise<{ blob: Blob; width: number; height: number; extension?: string }>;
   };
   ImageStitcher: {
     normalizeOptions: (opts: Partial<StitchOptions>) => StitchOptions;
@@ -435,7 +530,7 @@ interface ToolboxGlobal {
       outputSize?: { width: number; height: number } | null;
       scope: ResourceScopeLike;
       signal?: AbortSignal;
-    }) => Promise<{ blob: Blob; width: number; height: number }>;
+    }) => Promise<{ blob: Blob; width: number; height: number; extension?: string }>;
   };
   PageRange: {
     allPages: (total: number) => number[];
@@ -512,6 +607,85 @@ interface ToolboxGlobal {
       options: { type: string; quality: number; dpi: number },
       hooks?: { signal?: AbortSignal; onProgress?: (info: { stage?: string; current?: number; total?: number; pageNumber?: number }) => void }
     ) => Promise<{ images: { blob: Blob; outputPage?: number }[]; dpi: number; type: string }>;
+    pdfToLongImage: (
+      session: PdfSessionLike,
+      pageNumbers: Array<number | { sourcePage: number; rotation: number; outputPage: number }>,
+      options: { type: string; quality: number; dpi: number; gap?: number; divider?: boolean; background?: string },
+      hooks?: { signal?: AbortSignal; onProgress?: (info: { stage?: string; current?: number; total?: number; pageNumber?: number }) => void }
+    ) => Promise<{ blob: Blob; width: number; height: number; pageCount: number; type: string; effectiveDpi: number }>;
+    signPDF: (
+      file: File,
+      pagePlan: { sourcePage: number; rotation: number }[] | null,
+      placements: Array<{
+        stampId?: string;
+        stampBytes: Blob | Uint8Array;
+        page?: number;
+        pages?: number[];
+        xRatio: number;
+        yRatio: number;
+        widthRatio: number;
+        rotation?: number;
+        opacity?: number;
+      }>,
+      hooks?: { signal?: AbortSignal; onProgress?: (info: { stage?: string; current?: number; total?: number }) => void }
+    ) => Promise<{ blob: Blob; pageCount: number; placedCount: number; inputBytes: number; outputBytes: number }>;
+    formatPageNumberLabel: (displayNum: number, displayTotal: number, format?: string) => string;
+    addHeaderFooterPDF: (
+      file: File,
+      pagePlan: { sourcePage: number; rotation: number }[] | null,
+      options: {
+        pageNumberEnabled?: boolean;
+        format?: string;
+        position?: string;
+        startNumber?: number;
+        skipFirstPage?: boolean;
+        headerText?: string;
+        headerAlign?: 'left' | 'center' | 'right';
+        footerText?: string;
+        footerAlign?: 'left' | 'center' | 'right';
+        fontSize?: number;
+        marginMm?: number;
+        color?: string;
+        pages?: number[];
+      },
+      hooks?: { signal?: AbortSignal; onProgress?: (info: { stage?: string; current?: number; total?: number }) => void }
+    ) => Promise<{ blob: Blob; pageCount: number; appliedCount: number; inputBytes: number; outputBytes: number }>;
+  };
+  PDFCompare: {
+    comparePageCanvases: (
+      canvasA: HTMLCanvasElement | null,
+      canvasB: HTMLCanvasElement | null,
+      options?: { threshold?: number; mode?: 'overlay' | 'highlight' }
+    ) => { diffCanvas: HTMLCanvasElement; width: number; height: number; diffPixels: number; totalPixels: number; diffRatio: number; hasDiff: boolean };
+    scanDocumentDifferences: (
+      sessionA: PdfSessionLike,
+      sessionB: PdfSessionLike,
+      options?: {
+        planA?: { sourcePage: number; rotation: number }[] | null;
+        planB?: { sourcePage: number; rotation: number }[] | null;
+        maxEdge?: number;
+        threshold?: number;
+        signal?: AbortSignal;
+        onProgress?: (info: { current: number; total: number }) => void;
+      }
+    ) => Promise<{ pages: PdfComparePageResult[]; totalPages: number; diffPages: number[] }>;
+    exportDiffReportPDF: (
+      sessionA: PdfSessionLike,
+      sessionB: PdfSessionLike,
+      pageNumbers: number[],
+      options?: {
+        planA?: { sourcePage: number; rotation: number }[] | null;
+        planB?: { sourcePage: number; rotation: number }[] | null;
+        mode?: 'overlay' | 'highlight';
+        threshold?: number;
+        maxEdge?: number;
+        signal?: AbortSignal;
+        onProgress?: (info: { stage?: string; current?: number; total?: number; pageNumber?: number }) => void;
+      }
+    ) => Promise<{ blob: Blob; pageCount: number; outputBytes: number }>;
+  };
+  MediaPipeRuntime?: {
+    ensureFileset: () => Promise<{ wasmLoaderPath: string; wasmBinaryPath: string }>;
   };
   IdCardSheet: {
     PAGE_MM: { width: number; height: number };
@@ -547,7 +721,7 @@ declare global {
     Toolbox: ToolboxGlobal;
     ToolboxPDFJS?: unknown;
     ToolboxPDFLib?: unknown;
-    ToolboxMediaPipe?: { FaceDetector: unknown; FaceLandmarker: unknown };
+    ToolboxMediaPipe?: { FaceDetector: unknown; FaceLandmarker: unknown; ImageSegmenter?: unknown };
     heic2any?: unknown;
     __SINGLE_FILE_ASSETS__?: Record<string, string>;
   }
@@ -655,13 +829,17 @@ export const ensureHeic = async () => {
 };
 
 export const ensureMediaPipe = async () => {
-  if (window.ToolboxMediaPipe?.FaceDetector && window.ToolboxMediaPipe?.FaceLandmarker) {
+  if (window.ToolboxMediaPipe?.FaceDetector && window.ToolboxMediaPipe?.FaceLandmarker && window.ToolboxMediaPipe?.ImageSegmenter) {
     return window.ToolboxMediaPipe;
   }
   if (!mediaPipePromise) {
     mediaPipePromise = import('@mediapipe/tasks-vision')
       .then((mod) => {
-        window.ToolboxMediaPipe = { FaceDetector: mod.FaceDetector, FaceLandmarker: mod.FaceLandmarker };
+        window.ToolboxMediaPipe = {
+          FaceDetector: mod.FaceDetector,
+          FaceLandmarker: mod.FaceLandmarker,
+          ImageSegmenter: mod.ImageSegmenter
+        };
         return window.ToolboxMediaPipe;
       })
       .catch((err) => {
@@ -672,11 +850,16 @@ export const ensureMediaPipe = async () => {
   return mediaPipePromise;
 };
 
+let sharedWasmLoaderUrl = '';
+let sharedWasmBinaryUrl = '';
+let sharedFilesetPromise: Promise<{ wasmLoaderPath: string; wasmBinaryPath: string }> | null = null;
+
 const MEDIAPIPE_ASSET_PATHS: Record<string, string> = {
   mediapipeLoader: './mediapipe/vision_wasm_internal.js',
   mediapipeWasm: './mediapipe/vision_wasm_internal.wasm',
   faceDetectorModel: './mediapipe/blaze_face_full_range.tflite',
-  faceLandmarkerModel: './mediapipe/face_landmarker.task'
+  faceLandmarkerModel: './mediapipe/face_landmarker.task',
+  selfieSegmenterModel: './mediapipe/selfie_segmenter.tflite'
 };
 
 const fetchAsset = async (name: string) => {
@@ -699,7 +882,8 @@ window.Toolbox.EmbeddedAssets = {
       'mediapipeLoader',
       'mediapipeWasm',
       'faceDetectorModel',
-      'faceLandmarkerModel'
+      'faceLandmarkerModel',
+      'selfieSegmenterModel'
     ].includes(name),
   getUrl: (name: string) => (name === 'pdfWorker' && pdfWorkerUrl ? pdfWorkerUrl : ''),
   loadScript: async (name: string) => {
@@ -723,6 +907,33 @@ window.Toolbox.EmbeddedAssets = {
     if (window.__SINGLE_FILE_ASSETS__?.[name]) {
       delete window.__SINGLE_FILE_ASSETS__[name];
     }
+  }
+};
+
+window.Toolbox.MediaPipeRuntime = {
+  ensureFileset: async () => {
+    if (sharedWasmLoaderUrl && sharedWasmBinaryUrl && window.ToolboxMediaPipe?.ImageSegmenter) {
+      return { wasmLoaderPath: sharedWasmLoaderUrl, wasmBinaryPath: sharedWasmBinaryUrl };
+    }
+    if (!sharedFilesetPromise) {
+      sharedFilesetPromise = (async () => {
+        await ensureMediaPipe();
+        const assets = window.Toolbox.EmbeddedAssets!;
+        const [loaderSource, wasmBytes] = await Promise.all([
+          assets.getText!('mediapipeLoader'),
+          assets.getBytes!('mediapipeWasm')
+        ]);
+        sharedWasmLoaderUrl ||= URL.createObjectURL(new Blob([loaderSource], { type: 'text/javascript' }));
+        sharedWasmBinaryUrl ||= URL.createObjectURL(new Blob([wasmBytes as BlobPart], { type: 'application/wasm' }));
+        assets.release?.('mediapipeLoader');
+        assets.release?.('mediapipeWasm');
+        return { wasmLoaderPath: sharedWasmLoaderUrl, wasmBinaryPath: sharedWasmBinaryUrl };
+      })().catch((err) => {
+        sharedFilesetPromise = null;
+        throw err;
+      });
+    }
+    return sharedFilesetPromise;
   }
 };
 

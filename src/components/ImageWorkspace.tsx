@@ -24,6 +24,7 @@ import {
   ScanFace,
   Trash2,
   Undo2,
+  UserSquare2,
   ZoomIn,
   ZoomOut
 } from 'lucide-react';
@@ -36,6 +37,7 @@ import {
 } from '../stores/useImageStore';
 import { useTaskStore } from '../stores/useTaskStore';
 import { FaceRedactInspector } from './FaceRedactInspector';
+import { IdPhotoInspector } from './IdPhotoInspector';
 import { ImageSplitInspector } from './ImageSplitInspector';
 import { NumericInput } from './NumericInput';
 import { WatermarkPresetPanel } from './WatermarkPresetPanel';
@@ -43,7 +45,8 @@ import { WorkbenchShell } from './WorkbenchShell';
 
 const IMAGE_TOOLS: { id: ImageToolId; label: string; icon: typeof Droplets }[] = [
   { id: 'watermark', label: '水印', icon: Droplets },
-  { id: 'redact', label: '人脸打码', icon: ScanFace },
+  { id: 'redact', label: '打码标注', icon: ScanFace },
+  { id: 'id-photo', label: '证件照', icon: UserSquare2 },
   { id: 'compress', label: '压缩', icon: Minimize2 },
   { id: 'resize', label: '尺寸', icon: Maximize2 },
   { id: 'transform', label: '旋转', icon: RotateCw },
@@ -144,8 +147,11 @@ export function ImageWorkspace() {
   const logoName = useImageStore((s) => s.logoName);
   const watermark = useImageStore((s) => s.watermark);
   const redact = useImageStore((s) => s.redact);
+  const redactDrawMode = useImageStore((s) => s.redactDrawMode);
   const facesByItemId = useImageStore((s) => s.facesByItemId);
   const selectedFaceId = useImageStore((s) => s.selectedFaceId);
+  const idPhoto = useImageStore((s) => s.idPhoto);
+  const portraitMaskByItemId = useImageStore((s) => s.portraitMaskByItemId);
   const compress = useImageStore((s) => s.compress);
   const resize = useImageStore((s) => s.resize);
   const transform = useImageStore((s) => s.transform);
@@ -168,6 +174,7 @@ export function ImageWorkspace() {
   const setSelectedFaceId = useImageStore((s) => s.setSelectedFaceId);
   const addManualFace = useImageStore((s) => s.addManualFace);
   const updateFace = useImageStore((s) => s.updateFace);
+  const patchIdPhoto = useImageStore((s) => s.patchIdPhoto);
   const patchCompress = useImageStore((s) => s.patchCompress);
   const patchResize = useImageStore((s) => s.patchResize);
   const patchTransform = useImageStore((s) => s.patchTransform);
@@ -201,10 +208,17 @@ export function ImageWorkspace() {
   const [stitchDrag, setStitchDrag] = useState<{ fromId: string; targetId: string } | null>(null);
   const [wmDragging, setWmDragging] = useState(false);
   const [faceDrag, setFaceDrag] = useState<
-    | { mode: 'move' | 'resize'; faceId: string; startX: number; startY: number; orig: { x: number; y: number; width: number; height: number } }
+    | {
+        mode: 'move' | 'resize';
+        faceId: string;
+        startX: number;
+        startY: number;
+        orig: { x: number; y: number; width: number; height: number; x1?: number; y1?: number; x2?: number; y2?: number };
+      }
     | { mode: 'draw'; startX: number; startY: number; curX: number; curY: number }
     | null
   >(null);
+  const [idPhotoDrag, setIdPhotoDrag] = useState<{ startX: number; startY: number; origX: number; origY: number } | null>(null);
   const [cropDrag, setCropDrag] = useState<{
     startX: number;
     startY: number;
@@ -248,6 +262,7 @@ export function ImageWorkspace() {
 
   const activeItem = items.find((i) => i.id === selectedId) ?? items[0] ?? null;
   const activeFaces = useMemo(() => (activeItem ? facesByItemId[activeItem.id] ?? [] : []), [activeItem, facesByItemId]);
+  const activePortraitMask = activeItem ? portraitMaskByItemId[activeItem.id] ?? null : null;
 
   const splitAnalysisInfo = useMemo<{ analysis: SplitAnalysis | null; error: string | null }>(() => {
     if (tool !== 'split' || !activeItem) return { analysis: null, error: null };
@@ -295,7 +310,12 @@ export function ImageWorkspace() {
     if (!activeItem) return '';
     const engine = getEngine();
     const d = activeItem.decoded.dimensions;
+    if (tool === 'id-photo') {
+      const target = engine.PortraitSegmenter.outputDimensionsFor(d, idPhoto.preset);
+      return `${target.width}×${target.height}`;
+    }
     if (tool === 'compress') {
+      if (compress.profile === 'target') return `≤ ${compress.targetKB} KB`;
       const prof = engine.CompressionModel.profiles[compress.profile];
       const maxEdge = compress.profile === 'custom' ? compress.maxEdge : prof?.maxEdge ?? 2560;
       const out = engine.CompressionModel.getOutputSize(d.width, d.height, maxEdge);
@@ -314,7 +334,7 @@ export function ImageWorkspace() {
       return `${out.width}×${out.height}`;
     }
     return `${d.width}×${d.height}`;
-  }, [tool, activeItem, stitchLayoutInfo, compress, resize, transform, crop]);
+  }, [tool, activeItem, stitchLayoutInfo, compress, resize, transform, crop, idPhoto]);
 
   // Unified rAF Canvas Renderer
   useEffect(() => {
@@ -378,6 +398,18 @@ export function ImageWorkspace() {
         return;
       }
 
+      if (tool === 'id-photo') {
+        const target = engine.PortraitSegmenter.outputDimensionsFor(activeItem.decoded.dimensions, idPhoto.preset);
+        const pScale = Math.min(1, 1100 / Math.max(target.width, target.height, 1));
+        canvas.width = Math.max(1, Math.round(target.width * pScale));
+        canvas.height = Math.max(1, Math.round(target.height * pScale));
+        engine.PortraitSegmenter.renderIdPhoto(ctx, src, activePortraitMask, {
+          ...idPhoto,
+          showCheckerboard: true
+        });
+        return;
+      }
+
       if (tool === 'transform') {
         const rot = ((transform.rotation % 360) + 360) % 360;
         const swap = rot === 90 || rot === 270;
@@ -432,18 +464,46 @@ export function ImageWorkspace() {
           ctx.restore();
         });
         if (faceDrag && faceDrag.mode === 'draw') {
-          const lx = Math.min(faceDrag.startX, faceDrag.curX) * pw;
-          const ly = Math.min(faceDrag.startY, faceDrag.curY) * ph;
-          const lw = Math.abs(faceDrag.curX - faceDrag.startX) * pw;
-          const lh = Math.abs(faceDrag.curY - faceDrag.startY) * ph;
-          ctx.save();
-          ctx.fillStyle = 'rgba(59, 130, 246, 0.16)';
-          ctx.fillRect(lx, ly, lw, lh);
-          ctx.strokeStyle = '#2563eb';
-          ctx.lineWidth = Math.max(2, pw / 360);
-          ctx.setLineDash([6, 4]);
-          ctx.strokeRect(lx, ly, lw, lh);
-          ctx.restore();
+          if (redactDrawMode === 'arrow') {
+            engine.FaceRedactor.drawRedactions(
+              ctx,
+              src,
+              pw,
+              ph,
+              [
+                {
+                  id: '__preview__',
+                  kind: 'arrow',
+                  x: Math.min(faceDrag.startX, faceDrag.curX),
+                  y: Math.min(faceDrag.startY, faceDrag.curY),
+                  width: Math.abs(faceDrag.curX - faceDrag.startX),
+                  height: Math.abs(faceDrag.curY - faceDrag.startY),
+                  x1: faceDrag.startX,
+                  y1: faceDrag.startY,
+                  x2: faceDrag.curX,
+                  y2: faceDrag.curY,
+                  strokeColor: redact.annotationColor || '#ef4444',
+                  strokeWidth: redact.annotationWidth || 5,
+                  enabled: true,
+                  source: 'manual'
+                }
+              ],
+              redact
+            );
+          } else {
+            const lx = Math.min(faceDrag.startX, faceDrag.curX) * pw;
+            const ly = Math.min(faceDrag.startY, faceDrag.curY) * ph;
+            const lw = Math.abs(faceDrag.curX - faceDrag.startX) * pw;
+            const lh = Math.abs(faceDrag.curY - faceDrag.startY) * ph;
+            ctx.save();
+            ctx.fillStyle = redactDrawMode === 'highlight' ? 'rgba(239, 68, 68, 0.1)' : 'rgba(59, 130, 246, 0.16)';
+            ctx.fillRect(lx, ly, lw, lh);
+            ctx.strokeStyle = redactDrawMode === 'highlight' ? redact.annotationColor || '#ef4444' : '#2563eb';
+            ctx.lineWidth = Math.max(2, pw / 360);
+            ctx.setLineDash([6, 4]);
+            ctx.strokeRect(lx, ly, lw, lh);
+            ctx.restore();
+          }
         }
       } else if (tool === 'split' && splitAnalysisInfo.analysis) {
         const rects = splitAnalysisInfo.analysis.rects;
@@ -517,9 +577,12 @@ export function ImageWorkspace() {
     activeItem,
     watermark,
     redact,
+    redactDrawMode,
     activeFaces,
     selectedFaceId,
     faceDrag,
+    idPhoto,
+    activePortraitMask,
     splitAnalysisInfo,
     transform,
     crop,
@@ -782,6 +845,13 @@ export function ImageWorkspace() {
                 patchWatermark({ position: { xRatio: pt.x, yRatio: pt.y } });
                 return;
               }
+              if (tool === 'id-photo') {
+                const pt = canvasRatioPoint(e.clientX, e.clientY);
+                if (!pt) return;
+                e.currentTarget.setPointerCapture(e.pointerId);
+                setIdPhotoDrag({ startX: pt.x, startY: pt.y, origX: idPhoto.offsetX, origY: idPhoto.offsetY });
+                return;
+              }
               if (tool === 'redact') {
                 const pt = canvasRatioPoint(e.clientX, e.clientY);
                 if (!pt) return;
@@ -795,7 +865,7 @@ export function ImageWorkspace() {
                     faceId: sel.id,
                     startX: pt.x,
                     startY: pt.y,
-                    orig: { x: sel.x, y: sel.y, width: sel.width, height: sel.height }
+                    orig: { x: sel.x, y: sel.y, width: sel.width, height: sel.height, x1: sel.x1, y1: sel.y1, x2: sel.x2, y2: sel.y2 }
                   });
                   return;
                 }
@@ -810,11 +880,11 @@ export function ImageWorkspace() {
                     faceId: hit.id,
                     startX: pt.x,
                     startY: pt.y,
-                    orig: { x: hit.x, y: hit.y, width: hit.width, height: hit.height }
+                    orig: { x: hit.x, y: hit.y, width: hit.width, height: hit.height, x1: hit.x1, y1: hit.y1, x2: hit.x2, y2: hit.y2 }
                   });
                   return;
                 }
-                // Otherwise draw a brand new manual redaction box
+                // Otherwise draw a brand new manual redaction/annotation box
                 setFaceDrag({ mode: 'draw', startX: pt.x, startY: pt.y, curX: pt.x, curY: pt.y });
                 return;
               }
@@ -853,22 +923,56 @@ export function ImageWorkspace() {
                 if (pt) patchWatermark({ position: { xRatio: pt.x, yRatio: pt.y } });
                 return;
               }
+              if (idPhotoDrag) {
+                const pt = canvasRatioPoint(e.clientX, e.clientY);
+                if (pt) {
+                  patchIdPhoto({
+                    offsetX: Math.max(-0.8, Math.min(0.8, idPhotoDrag.origX + (pt.x - idPhotoDrag.startX))),
+                    offsetY: Math.max(-0.8, Math.min(0.8, idPhotoDrag.origY + (pt.y - idPhotoDrag.startY)))
+                  });
+                }
+                return;
+              }
               if (faceDrag) {
                 const pt = canvasRatioPoint(e.clientX, e.clientY);
                 if (!pt) return;
                 if (faceDrag.mode === 'draw') {
                   setFaceDrag({ ...faceDrag, curX: pt.x, curY: pt.y });
                 } else if (faceDrag.mode === 'move') {
-                  const dx = pt.x - faceDrag.startX;
-                  const dy = pt.y - faceDrag.startY;
+                  const dx = Math.max(-faceDrag.orig.x, Math.min(1 - faceDrag.orig.x - faceDrag.orig.width, pt.x - faceDrag.startX));
+                  const dy = Math.max(-faceDrag.orig.y, Math.min(1 - faceDrag.orig.y - faceDrag.orig.height, pt.y - faceDrag.startY));
+                  const arrowPatch =
+                    faceDrag.orig.x1 !== undefined && faceDrag.orig.y1 !== undefined && faceDrag.orig.x2 !== undefined && faceDrag.orig.y2 !== undefined
+                      ? {
+                          x1: Math.max(0, Math.min(1, faceDrag.orig.x1 + dx)),
+                          y1: Math.max(0, Math.min(1, faceDrag.orig.y1 + dy)),
+                          x2: Math.max(0, Math.min(1, faceDrag.orig.x2 + dx)),
+                          y2: Math.max(0, Math.min(1, faceDrag.orig.y2 + dy))
+                        }
+                      : {};
                   updateFace(faceDrag.faceId, {
-                    x: Math.max(0, Math.min(1 - faceDrag.orig.width, faceDrag.orig.x + dx)),
-                    y: Math.max(0, Math.min(1 - faceDrag.orig.height, faceDrag.orig.y + dy))
+                    x: faceDrag.orig.x + dx,
+                    y: faceDrag.orig.y + dy,
+                    ...arrowPatch
                   });
                 } else {
                   const nw = Math.max(0.03, Math.min(1 - faceDrag.orig.x, faceDrag.orig.width + (pt.x - faceDrag.startX)));
                   const nh = Math.max(0.03, Math.min(1 - faceDrag.orig.y, faceDrag.orig.height + (pt.y - faceDrag.startY)));
-                  updateFace(faceDrag.faceId, { width: nw, height: nh });
+                  const targetFace = activeFaces.find((f) => f.id === faceDrag.faceId);
+                  if (targetFace?.kind === 'arrow' && faceDrag.orig.x1 !== undefined && faceDrag.orig.y1 !== undefined) {
+                    const x2 = Math.max(0, Math.min(1, pt.x));
+                    const y2 = Math.max(0, Math.min(1, pt.y));
+                    updateFace(faceDrag.faceId, {
+                      x: Math.min(faceDrag.orig.x1, x2),
+                      y: Math.min(faceDrag.orig.y1, y2),
+                      width: Math.max(0.02, Math.abs(x2 - faceDrag.orig.x1)),
+                      height: Math.max(0.02, Math.abs(y2 - faceDrag.orig.y1)),
+                      x2,
+                      y2
+                    });
+                  } else {
+                    updateFace(faceDrag.faceId, { width: nw, height: nh });
+                  }
                 }
                 return;
               }
@@ -926,9 +1030,27 @@ export function ImageWorkspace() {
                 const y = Math.min(faceDrag.startY, faceDrag.curY);
                 const w = Math.abs(faceDrag.curX - faceDrag.startX);
                 const h = Math.abs(faceDrag.curY - faceDrag.startY);
-                if (w >= 0.025 && h >= 0.025) addManualFace({ x, y, width: w, height: h });
+                if (redactDrawMode === 'arrow') {
+                  if (Math.hypot(w, h) >= 0.03) {
+                    addManualFace({
+                      x,
+                      y,
+                      width: Math.max(0.02, w),
+                      height: Math.max(0.02, h),
+                      x1: faceDrag.startX,
+                      y1: faceDrag.startY,
+                      x2: faceDrag.curX,
+                      y2: faceDrag.curY
+                    });
+                  }
+                } else if (redactDrawMode === 'bar') {
+                  if (w >= 0.02 && h >= 0.012) addManualFace({ x, y, width: w, height: h });
+                } else if (w >= 0.025 && h >= 0.025) {
+                  addManualFace({ x, y, width: w, height: h });
+                }
               }
               setFaceDrag(null);
+              setIdPhotoDrag(null);
               setWmDragging(false);
               setCropDrag(null);
             }}
@@ -936,6 +1058,7 @@ export function ImageWorkspace() {
               setPanDrag(null);
               setStitchDrag(null);
               setFaceDrag(null);
+              setIdPhotoDrag(null);
               setWmDragging(false);
               setCropDrag(null);
             }}
@@ -948,11 +1071,15 @@ export function ImageWorkspace() {
                   ? stitchDrag
                     ? 'cursor-grabbing'
                     : 'cursor-grab'
-                  : tool === 'crop' || tool === 'redact'
-                    ? 'cursor-crosshair'
-                    : tool === 'watermark' && !watermark.tile
-                      ? 'cursor-move'
-                      : ''
+                  : tool === 'id-photo'
+                    ? idPhotoDrag
+                      ? 'cursor-grabbing'
+                      : 'cursor-grab'
+                    : tool === 'crop' || tool === 'redact'
+                      ? 'cursor-crosshair'
+                      : tool === 'watermark' && !watermark.tile
+                        ? 'cursor-move'
+                        : ''
             }`}
             style={{
               transform: `translate3d(${pan.x}px, ${pan.y}px, 0) scale(${zoom})`,
@@ -1314,6 +1441,8 @@ export function ImageWorkspace() {
 
       {tool === 'redact' && <FaceRedactInspector />}
 
+      {tool === 'id-photo' && <IdPhotoInspector />}
+
       {tool === 'split' && <ImageSplitInspector analysis={splitAnalysisInfo.analysis} error={splitAnalysisInfo.error} />}
 
       {tool === 'compress' && (
@@ -1323,6 +1452,7 @@ export function ImageWorkspace() {
               ['high', '高清 · 优先细节', '最长边 4096px · 质量 90%'],
               ['balanced', '均衡 · 日常发送', '最长边 2560px · 质量 82%'],
               ['strong', '强力 · 快速传输', '最长边 1920px · 质量 70%'],
+              ['target', '按目标体积压缩', '自动二分画质与尺寸，精准控到指定 KB 以下'],
               ['custom', '自定义最长边', '手动控制输出像素上限']
             ] as const
           ).map(([id, title, desc]) => {
@@ -1347,6 +1477,41 @@ export function ImageWorkspace() {
               </button>
             );
           })}
+          {compress.profile === 'target' && (
+            <div className="space-y-2 rounded-xl border p-2.5" style={{ background: 'var(--bg-subtle)', borderColor: 'var(--line)' }}>
+              <div className="flex flex-wrap gap-1.5">
+                {[100, 200, 500, 1024, 2048].map((kb) => (
+                  <button
+                    key={kb}
+                    type="button"
+                    onClick={() => patchCompress({ targetKB: kb })}
+                    className="h-6 rounded-full border px-2 font-mono text-[12px] font-semibold"
+                    style={{
+                      background: compress.targetKB === kb ? 'var(--accent-soft)' : 'var(--bg-surface)',
+                      borderColor: compress.targetKB === kb ? 'var(--accent-border)' : 'var(--line-strong)',
+                      color: compress.targetKB === kb ? 'var(--accent)' : 'var(--ink-2)'
+                    }}
+                  >
+                    {kb >= 1024 ? `${kb / 1024} MB` : `${kb} KB`}
+                  </button>
+                ))}
+              </div>
+              <label className="block text-[13px] font-semibold" style={{ color: 'var(--ink-2)' }}>
+                目标体积上限（KB）
+                <NumericInput
+                  min={20}
+                  max={20480}
+                  fallback={200}
+                  value={compress.targetKB}
+                  onCommit={(v) => patchCompress({ targetKB: v })}
+                  className="mt-1 h-8 w-full rounded-lg border px-2.5 font-mono text-[13.5px]"
+                />
+              </label>
+              <p className="text-[11.5px] leading-relaxed" style={{ color: 'var(--muted)' }}>
+                导出时优先保留高分辨率并自动搜索最佳 JPG/WebP 画质，必要时逐步降边长以确保不超标。
+              </p>
+            </div>
+          )}
           {compress.profile === 'custom' && (
             <label className="block text-[13px] font-semibold" style={{ color: 'var(--ink-2)' }}>
               最长边限制（px）

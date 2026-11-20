@@ -1,15 +1,23 @@
 import { useRef } from 'react';
-import { Eye, EyeOff, ImagePlus, Plus, ScanFace, Trash2 } from 'lucide-react';
-import { getEngine } from '../bridge/engine';
+import { ArrowUpRight, Eye, EyeOff, ImagePlus, Minus, Plus, ScanFace, Square, Trash2 } from 'lucide-react';
+import { getEngine, RedactBoxKind } from '../bridge/engine';
 import { DEFAULT_REDACT, useImageStore } from '../stores/useImageStore';
 import { useTaskStore } from '../stores/useTaskStore';
 
 const SOLID_SWATCHES = ['#111827', '#ffffff', '#334155', '#2563eb', '#e11d48'];
+const ANNOTATION_SWATCHES = ['#ef4444', '#f59e0b', '#2563eb', '#10b981', '#111827'];
+const DRAW_MODES: { id: RedactBoxKind; label: string; icon: typeof ScanFace }[] = [
+  { id: 'redact', label: '打码框', icon: ScanFace },
+  { id: 'bar', label: '横条遮挡', icon: Minus },
+  { id: 'highlight', label: '红框高亮', icon: Square },
+  { id: 'arrow', label: '箭头标注', icon: ArrowUpRight }
+];
 
 export function FaceRedactInspector() {
   const items = useImageStore((s) => s.items);
   const selectedId = useImageStore((s) => s.selectedId);
   const redact = useImageStore((s) => s.redact);
+  const drawMode = useImageStore((s) => s.redactDrawMode);
   const detectMode = useImageStore((s) => s.redactDetectMode);
   const confidence = useImageStore((s) => s.redactConfidence);
   const stickerName = useImageStore((s) => s.stickerName);
@@ -17,6 +25,7 @@ export function FaceRedactInspector() {
   const selectedFaceId = useImageStore((s) => s.selectedFaceId);
 
   const patchRedact = useImageStore((s) => s.patchRedact);
+  const setDrawMode = useImageStore((s) => s.setRedactDrawMode);
   const setDetectMode = useImageStore((s) => s.setRedactDetectMode);
   const setConfidence = useImageStore((s) => s.setRedactConfidence);
   const setSelectedFaceId = useImageStore((s) => s.setSelectedFaceId);
@@ -57,13 +66,21 @@ export function FaceRedactInspector() {
         <div className="grid grid-cols-2 gap-1.5">
           <button
             type="button"
-            onClick={() => addManualFace()}
+            onClick={() => addManualFace(undefined, drawMode)}
             disabled={!activeItem}
             className="inline-flex h-7 items-center justify-center gap-1 rounded-lg border text-[13px] font-semibold disabled:opacity-40"
             style={{ background: 'var(--bg-subtle)', borderColor: 'var(--line-strong)', color: 'var(--ink-2)' }}
           >
             <Plus className="h-3.5 w-3.5" />
-            <span>手动添框</span>
+            <span>
+              {drawMode === 'bar'
+                ? '加横条'
+                : drawMode === 'highlight'
+                  ? '加红框'
+                  : drawMode === 'arrow'
+                    ? '加箭头'
+                    : '手动添框'}
+            </span>
           </button>
           <button
             type="button"
@@ -76,6 +93,93 @@ export function FaceRedactInspector() {
             <span>清空（{faces.length}）</span>
           </button>
         </div>
+
+        {/* Drawing / Annotation tool picker */}
+        <div className="space-y-1 pt-0.5">
+          <span className="block text-[12px] font-bold" style={{ color: 'var(--muted)' }}>
+            画布拖拽绘制模式
+          </span>
+          <div className="grid grid-cols-4 gap-1 rounded-xl p-1" style={{ background: 'var(--bg-well)' }}>
+            {DRAW_MODES.map(({ id, label, icon: Icon }) => (
+              <button
+                key={id}
+                type="button"
+                onClick={() => setDrawMode(id)}
+                className="inline-flex h-7 items-center justify-center gap-1 rounded-lg px-1 text-[11.5px] font-semibold"
+                style={{
+                  background: drawMode === id ? 'var(--bg-surface)' : 'transparent',
+                  color: drawMode === id ? 'var(--accent)' : 'var(--muted)'
+                }}
+              >
+                <Icon className="h-3 w-3 shrink-0" />
+                <span className="truncate">{label}</span>
+              </button>
+            ))}
+          </div>
+        </div>
+
+        {(drawMode === 'highlight' || drawMode === 'arrow') && (
+          <div className="space-y-2 rounded-xl border p-2" style={{ background: 'var(--bg-subtle)', borderColor: 'var(--line)' }}>
+            <div className="flex items-center justify-between gap-2">
+              <span className="text-[12.5px] font-semibold" style={{ color: 'var(--ink-2)' }}>
+                标注颜色
+              </span>
+              <div className="flex items-center gap-1.5">
+                <input
+                  type="color"
+                  value={redact.annotationColor || '#ef4444'}
+                  onChange={(e) => {
+                    patchRedact({ annotationColor: e.target.value });
+                    if (selectedFace && (selectedFace.kind === 'highlight' || selectedFace.kind === 'arrow')) {
+                      updateFace(selectedFace.id, { strokeColor: e.target.value });
+                    }
+                  }}
+                  className="h-6 w-7 cursor-pointer rounded border p-0.5"
+                  style={{ borderColor: 'var(--line-strong)' }}
+                />
+                {ANNOTATION_SWATCHES.map((sw) => (
+                  <button
+                    key={sw}
+                    type="button"
+                    onClick={() => {
+                      patchRedact({ annotationColor: sw });
+                      if (selectedFace && (selectedFace.kind === 'highlight' || selectedFace.kind === 'arrow')) {
+                        updateFace(selectedFace.id, { strokeColor: sw });
+                      }
+                    }}
+                    className="h-4.5 w-4.5 rounded-full border"
+                    style={{
+                      background: sw,
+                      borderColor: (redact.annotationColor || '#ef4444').toLowerCase() === sw ? 'var(--accent)' : 'var(--line-strong)'
+                    }}
+                  />
+                ))}
+              </div>
+            </div>
+            <label className="block text-[12.5px] font-semibold" style={{ color: 'var(--ink-2)' }}>
+              <div className="flex justify-between">
+                <span>线条粗细</span>
+                <span className="font-mono" style={{ color: 'var(--accent)' }}>
+                  {redact.annotationWidth || 5}px
+                </span>
+              </div>
+              <input
+                type="range"
+                min={2}
+                max={16}
+                value={redact.annotationWidth || 5}
+                onChange={(e) => {
+                  const val = Number(e.target.value);
+                  patchRedact({ annotationWidth: val });
+                  if (selectedFace && (selectedFace.kind === 'highlight' || selectedFace.kind === 'arrow')) {
+                    updateFace(selectedFace.id, { strokeWidth: val });
+                  }
+                }}
+                className="w-full"
+              />
+            </label>
+          </div>
+        )}
 
         <div className="flex items-center justify-between gap-2 pt-0.5">
           <div className="grid flex-1 grid-cols-2 gap-1 rounded-lg p-0.5" style={{ background: 'var(--bg-well)' }}>
@@ -356,10 +460,19 @@ export function FaceRedactInspector() {
                   }}
                 >
                   <span className="truncate text-[12.5px] font-semibold" style={{ color: 'var(--ink)' }}>
-                    #{idx + 1} {face.source === 'manual' ? '手动框' : `人脸 ${engine.FaceExpression.emojiFor(expr)}`}
+                    #{idx + 1}{' '}
+                    {face.kind === 'bar'
+                      ? '横条遮挡'
+                      : face.kind === 'highlight'
+                        ? '红框高亮'
+                        : face.kind === 'arrow'
+                          ? '箭头标注'
+                          : face.source === 'manual'
+                            ? '手动框'
+                            : `人脸 ${engine.FaceExpression.emojiFor(expr)}`}
                   </span>
                   <div className="flex items-center gap-1">
-                    {redact.style === 'emoji' && (
+                    {redact.style === 'emoji' && (!face.kind || face.kind === 'redact') && (
                       <select
                         value={face.expressionOverride || ''}
                         onClick={(e) => e.stopPropagation()}

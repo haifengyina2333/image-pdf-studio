@@ -166,9 +166,85 @@
     ctx.fillText(emoji, box.x + box.width / 2, box.y + box.height / 2 + size * 0.03);
   };
 
+  const drawHighlightRect = (ctx, box, strokeColor, strokeWidth, width, height) => {
+    const scale = Math.max(0.65, Math.max(width, height) / 1200);
+    const lw = Math.max(2, strokeWidth * scale);
+    const radius = Math.min(lw * 1.4, box.width / 4, box.height / 4);
+    ctx.save();
+    ctx.strokeStyle = strokeColor;
+    ctx.lineWidth = lw;
+    ctx.lineJoin = 'round';
+    ctx.beginPath();
+    if (typeof ctx.roundRect === 'function') ctx.roundRect(box.x, box.y, box.width, box.height, radius);
+    else ctx.rect(box.x, box.y, box.width, box.height);
+    ctx.stroke();
+    ctx.restore();
+  };
+
+  const drawArrowAnnotation = (ctx, rawItem, width, height, strokeColor, strokeWidth) => {
+    const x1 = clamp(rawItem.x1 ?? rawItem.x) * width;
+    const y1 = clamp(rawItem.y1 ?? rawItem.y) * height;
+    const x2 = clamp(rawItem.x2 ?? (rawItem.x + rawItem.width)) * width;
+    const y2 = clamp(rawItem.y2 ?? (rawItem.y + rawItem.height)) * height;
+    const dx = x2 - x1, dy = y2 - y1, len = Math.hypot(dx, dy);
+    if (len < 2) return;
+    const scale = Math.max(0.65, Math.max(width, height) / 1200);
+    const lw = Math.max(2.5, strokeWidth * scale);
+    const headLen = Math.min(len * 0.48, Math.max(14 * scale, lw * 3.8));
+    const headAngle = Math.PI / 6.5;
+    const angle = Math.atan2(dy, dx);
+    const shaftEndX = x2 - Math.cos(angle) * headLen * 0.72;
+    const shaftEndY = y2 - Math.sin(angle) * headLen * 0.72;
+
+    ctx.save();
+    ctx.strokeStyle = strokeColor;
+    ctx.fillStyle = strokeColor;
+    ctx.lineWidth = lw;
+    ctx.lineCap = 'round';
+    ctx.lineJoin = 'round';
+    ctx.beginPath();
+    ctx.moveTo(x1, y1);
+    ctx.lineTo(shaftEndX, shaftEndY);
+    ctx.stroke();
+
+    ctx.beginPath();
+    ctx.moveTo(x2, y2);
+    ctx.lineTo(x2 - headLen * Math.cos(angle - headAngle), y2 - headLen * Math.sin(angle - headAngle));
+    ctx.lineTo(x2 - headLen * Math.cos(angle + headAngle), y2 - headLen * Math.sin(angle + headAngle));
+    ctx.closePath();
+    ctx.fill();
+    ctx.restore();
+  };
+
   const drawRedactions = (ctx, source, width, height, faces, rawOptions = {}) => {
     const options = normalizeOptions(rawOptions);
+    const defaultStrokeColor = /^#[0-9a-f]{6}$/i.test(rawOptions.annotationColor || '') ? rawOptions.annotationColor : '#ef4444';
+    const defaultStrokeWidth = clamp(rawOptions.annotationWidth ?? 5, 2, 20);
     (faces || []).filter((face) => face.enabled !== false).forEach((rawFace) => {
+      const kind = rawFace.kind || 'redact';
+      const strokeColor = /^#[0-9a-f]{6}$/i.test(rawFace.strokeColor || '') ? rawFace.strokeColor : defaultStrokeColor;
+      const strokeWidth = clamp(rawFace.strokeWidth ?? defaultStrokeWidth, 2, 20);
+
+      if (kind === 'arrow') {
+        drawArrowAnnotation(ctx, rawFace, width, height, strokeColor, strokeWidth);
+        return;
+      }
+      if (kind === 'highlight') {
+        const box = pixelBox(normalizeBox(rawFace), width, height);
+        drawHighlightRect(ctx, box, strokeColor, strokeWidth, width, height);
+        return;
+      }
+      if (kind === 'bar') {
+        const box = pixelBox(normalizeBox(rawFace), width, height);
+        const barStyle = rawFace.barStyle || (options.style === 'emoji' ? 'solid' : options.style);
+        ctx.save(); clipShape(ctx, box, 'rect');
+        if (barStyle === 'mosaic') drawMosaic(ctx, source, box, options.strength, width, height);
+        else if (barStyle === 'blur') drawBlur(ctx, source, box, options.strength, width, height);
+        else { ctx.fillStyle = rawFace.color || options.color || '#111827'; ctx.fillRect(box.x, box.y, box.width, box.height); }
+        ctx.restore();
+        return;
+      }
+
       const box = pixelBox(expandedBox(rawFace, options.margin), width, height);
       const detectedExpression = ns.FaceExpression?.normalize(rawFace.expressionOverride || rawFace.expression) || 'neutral';
       const expression = options.expressionMode === 'auto' ? detectedExpression : options.expressionMode === 'fixed' ? 'neutral' : ns.FaceExpression?.normalize(options.expressionMode) || 'neutral';

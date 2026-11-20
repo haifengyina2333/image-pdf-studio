@@ -11,6 +11,13 @@
   const embeddedAssetsReady = () => ['mediapipeRuntime', 'mediapipeLoader', 'mediapipeWasm', 'faceDetectorModel', 'faceLandmarkerModel'].every((name) => ns.EmbeddedAssets?.has(name));
   const fileset = () => ({ wasmLoaderPath: loaderUrl, wasmBinaryPath: wasmUrl });
   const ensureRuntimeUrls = async () => {
+    if (ns.MediaPipeRuntime?.ensureFileset) {
+      const shared = await ns.MediaPipeRuntime.ensureFileset();
+      loaderUrl = shared.wasmLoaderPath;
+      wasmUrl = shared.wasmBinaryPath;
+      if (!window.ToolboxMediaPipe?.FaceDetector || !window.ToolboxMediaPipe?.FaceLandmarker) throw new Error('人脸检测运行库初始化失败。');
+      return;
+    }
     if (loaderUrl && wasmUrl && window.ToolboxMediaPipe?.FaceDetector && window.ToolboxMediaPipe?.FaceLandmarker) return;
     if (!embeddedAssetsReady()) throw new Error('人脸检测组件未能加载，请重新打开工具后再试。');
     runtimePromise ||= (async () => {
@@ -81,13 +88,34 @@
     const dimensions = dimensionsFor(source), sourceX = Math.round(tile.x * dimensions.width), sourceY = Math.round(tile.y * dimensions.height), sourceWidth = Math.max(1, Math.round(tile.width * dimensions.width)), sourceHeight = Math.max(1, Math.round(tile.height * dimensions.height)), scale = Math.min(1, 1024 / Math.max(sourceWidth, sourceHeight));
     canvas.width = Math.max(1, Math.round(sourceWidth * scale)); canvas.height = Math.max(1, Math.round(sourceHeight * scale)); const context = canvas.getContext('2d', { alpha: false }); context.imageSmoothingEnabled = true; context.imageSmoothingQuality = 'high'; context.drawImage(source, sourceX, sourceY, sourceWidth, sourceHeight, 0, 0, canvas.width, canvas.height); return canvas;
   };
-  const squareCropForFace = (face) => {
+  const squareCropForFace = (face, dimensions = null) => {
+    if (dimensions?.width > 0 && dimensions?.height > 0) {
+      const w = dimensions.width, h = dimensions.height;
+      const cx = (face.x + face.width / 2) * w, cy = (face.y + face.height / 2) * h;
+      const side = Math.max(1, Math.min(Math.max(w, h), Math.max(face.width * w, face.height * h) * 2.25));
+      const left = cx - side / 2, top = cy - side / 2;
+      const sx = Math.max(0, Math.round(left)), sy = Math.max(0, Math.round(top));
+      const sRight = Math.min(w, Math.round(left + side)), sBottom = Math.min(h, Math.round(top + side));
+      return {
+        x: sx / w, y: sy / h, width: Math.max(1, sRight - sx) / w, height: Math.max(1, sBottom - sy) / h,
+        pixel: { sx, sy, sw: Math.max(1, sRight - sx), sh: Math.max(1, sBottom - sy), left, top, side }
+      };
+    }
     const centerX = face.x + face.width / 2, centerY = face.y + face.height / 2, size = Math.min(1, Math.max(face.width, face.height) * 2.25), x = clamp(centerX - size / 2, 0, Math.max(0, 1 - size)), y = clamp(centerY - size / 2, 0, Math.max(0, 1 - size));
     return { x, y, width: Math.min(size, 1 - x), height: Math.min(size, 1 - y) };
   };
   const renderFaceCrop = (source, face, canvas) => {
-    const dimensions = dimensionsFor(source), crop = squareCropForFace(face), sourceX = Math.round(crop.x * dimensions.width), sourceY = Math.round(crop.y * dimensions.height), sourceWidth = Math.max(1, Math.round(crop.width * dimensions.width)), sourceHeight = Math.max(1, Math.round(crop.height * dimensions.height));
-    canvas.width = 512; canvas.height = 512; const context = canvas.getContext('2d', { alpha: false }); context.fillStyle = '#808080'; context.fillRect(0, 0, 512, 512); context.imageSmoothingEnabled = true; context.imageSmoothingQuality = 'high'; context.drawImage(source, sourceX, sourceY, sourceWidth, sourceHeight, 0, 0, 512, 512); return canvas;
+    const dimensions = dimensionsFor(source), crop = squareCropForFace(face, dimensions);
+    canvas.width = 512; canvas.height = 512; const context = canvas.getContext('2d', { alpha: false }); context.fillStyle = '#808080'; context.fillRect(0, 0, 512, 512); context.imageSmoothingEnabled = true; context.imageSmoothingQuality = 'high';
+    if (crop.pixel) {
+      const { sx, sy, sw, sh, left, top, side } = crop.pixel;
+      const scale = 512 / side;
+      context.drawImage(source, sx, sy, sw, sh, (sx - left) * scale, (sy - top) * scale, sw * scale, sh * scale);
+    } else {
+      const sourceX = Math.round(crop.x * dimensions.width), sourceY = Math.round(crop.y * dimensions.height), sourceWidth = Math.max(1, Math.round(crop.width * dimensions.width)), sourceHeight = Math.max(1, Math.round(crop.height * dimensions.height));
+      context.drawImage(source, sourceX, sourceY, sourceWidth, sourceHeight, 0, 0, 512, 512);
+    }
+    return canvas;
   };
   const analyzeExpression = (landmarker, source, face, canvas) => {
     const dimensions = dimensionsFor(source), facePixels = Math.min(face.width * dimensions.width, face.height * dimensions.height);

@@ -105,7 +105,7 @@ export function PdfOrganizeStage({ session, plan }: PdfOrganizeStageProps) {
               </div>
 
               <div
-                className="relative flex aspect-[3/4] items-center justify-center overflow-hidden rounded-lg p-1"
+                className="relative flex aspect-square items-center justify-center overflow-hidden rounded-lg p-1.5"
                 style={{ background: 'var(--bg-well)' }}
               >
                 {thumb ? (

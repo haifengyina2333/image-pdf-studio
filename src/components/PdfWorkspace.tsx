@@ -12,10 +12,13 @@ import {
   FilePlus2,
   FileStack,
   FileText,
+  GitCompare,
+  Hash,
   IdCard,
   ImagePlus,
   Info,
   LayoutGrid,
+  PenTool,
   RotateCcw,
   Scissors,
   Trash2,
@@ -27,8 +30,10 @@ import { useAppStore } from '../stores/useAppStore';
 import { idCardSheetOptions, PdfToolId, usePdfStore } from '../stores/usePdfStore';
 import { useTaskStore } from '../stores/useTaskStore';
 import { NumericInput } from './NumericInput';
+import { PdfCompareStage } from './PdfCompareStage';
 import { PdfIdCardSheet } from './PdfIdCardSheet';
 import { PdfOrganizeStage } from './PdfOrganizeStage';
+import { PdfSignaturePanel } from './PdfSignaturePanel';
 import { WorkbenchShell } from './WorkbenchShell';
 
 const PDF_TOOLS: { id: PdfToolId; label: string; icon: typeof FileArchive }[] = [
@@ -37,8 +42,11 @@ const PDF_TOOLS: { id: PdfToolId; label: string; icon: typeof FileArchive }[] = 
   { id: 'merge', label: '合并 PDF', icon: FileStack },
   { id: 'split', label: '拆分提取', icon: Scissors },
   { id: 'watermark', label: 'PDF 水印', icon: Droplets },
+  { id: 'sign', label: '签名盖章', icon: PenTool },
+  { id: 'page-numbers', label: '页码页眉', icon: Hash },
+  { id: 'compare', label: '找不同', icon: GitCompare },
   { id: 'image-to-pdf', label: '图片转 PDF', icon: ImagePlus },
-  { id: 'pdf-to-image', label: 'PDF 转图片', icon: FileImage },
+  { id: 'pdf-to-image', label: '转图片/长图', icon: FileImage },
   { id: 'id-card', label: '证件合成 A4', icon: IdCard }
 ];
 
@@ -104,6 +112,13 @@ export function PdfWorkspace() {
   const mergeFilename = usePdfStore((s) => s.mergeFilename);
   const split = usePdfStore((s) => s.split);
   const watermark = usePdfStore((s) => s.watermark);
+  const signatureAssets = usePdfStore((s) => s.signatureAssets);
+  const signaturePlacements = usePdfStore((s) => s.signaturePlacements);
+  const selectedPlacementId = usePdfStore((s) => s.selectedPlacementId);
+  const signFilename = usePdfStore((s) => s.signFilename);
+  const pageNumbers = usePdfStore((s) => s.pageNumbers);
+  const compare = usePdfStore((s) => s.compare);
+  const compareResults = usePdfStore((s) => s.compareResults);
   const imageToPdf = usePdfStore((s) => s.imageToPdf);
   const pdfToImage = usePdfStore((s) => s.pdfToImage);
   const pdfImages = usePdfStore((s) => s.pdfImages);
@@ -134,6 +149,12 @@ export function PdfWorkspace() {
   const setMergeFilename = usePdfStore((s) => s.setMergeFilename);
   const patchSplit = usePdfStore((s) => s.patchSplit);
   const patchWatermark = usePdfStore((s) => s.patchWatermark);
+  const updateSignaturePlacement = usePdfStore((s) => s.updateSignaturePlacement);
+  const removeSignaturePlacement = usePdfStore((s) => s.removeSignaturePlacement);
+  const selectSignaturePlacement = usePdfStore((s) => s.selectSignaturePlacement);
+  const setSignFilename = usePdfStore((s) => s.setSignFilename);
+  const patchPageNumbers = usePdfStore((s) => s.patchPageNumbers);
+  const patchCompare = usePdfStore((s) => s.patchCompare);
   const patchImageToPdf = usePdfStore((s) => s.patchImageToPdf);
   const patchPdfToImage = usePdfStore((s) => s.patchPdfToImage);
   const patchIdCard = usePdfStore((s) => s.patchIdCard);
@@ -144,6 +165,10 @@ export function PdfWorkspace() {
   const runMerge = usePdfStore((s) => s.runMerge);
   const runSplit = usePdfStore((s) => s.runSplit);
   const runWatermark = usePdfStore((s) => s.runWatermark);
+  const runSignPdf = usePdfStore((s) => s.runSignPdf);
+  const runPageNumbers = usePdfStore((s) => s.runPageNumbers);
+  const runCompareScan = usePdfStore((s) => s.runCompareScan);
+  const runExportCompareReport = usePdfStore((s) => s.runExportCompareReport);
   const runImagesToPdf = usePdfStore((s) => s.runImagesToPdf);
   const runPdfToImages = usePdfStore((s) => s.runPdfToImages);
   const runIdCardSheet = usePdfStore((s) => s.runIdCardSheet);
@@ -162,12 +187,35 @@ export function PdfWorkspace() {
   const [panDrag, setPanDrag] = useState<{ startX: number; startY: number; origX: number; origY: number } | null>(null);
   const [comparingOriginal, setComparingOriginal] = useState(false);
   const [pageRenderSeq, setPageRenderSeq] = useState(0);
+  const [sigDrag, setSigDrag] = useState<{
+    id: string;
+    mode: 'move' | 'resize';
+    startX: number;
+    startY: number;
+    origX: number;
+    origY: number;
+    origW: number;
+    boxW: number;
+    boxH: number;
+  } | null>(null);
 
   const activeSession = sessions.find((s) => s.id === activeId) ?? null;
+  const compareTargetSession =
+    sessions.find((s) => s.id === compare.targetSessionId && s.id !== activeId) ??
+    sessions.find((s) => s.id !== activeId) ??
+    null;
   const activePlan = activeSession
     ? pagePlans[activeSession.id] ??
       Array.from({ length: activeSession.numPages }, (_, idx) => ({
         uid: `${activeSession.id}_p${idx + 1}`,
+        sourcePage: idx + 1,
+        rotation: 0
+      }))
+    : [];
+  const compareTargetPlan = compareTargetSession
+    ? pagePlans[compareTargetSession.id] ??
+      Array.from({ length: compareTargetSession.numPages }, (_, idx) => ({
+        uid: `${compareTargetSession.id}_p${idx + 1}`,
         sourcePage: idx + 1,
         rotation: 0
       }))
@@ -211,13 +259,20 @@ export function PdfWorkspace() {
     };
   }, []);
 
-  // Render active PDF page preview with strict original aspect ratio
+  // Render active PDF page preview with strict original aspect ratio (double-buffered, zero stretch flicker)
   useEffect(() => {
     const canvas = canvasRef.current;
-    if (tool === 'image-to-pdf' || tool === 'id-card' || tool === 'organize' || !activeSession || !canvas || !previewSourcePage) return;
+    if (tool === 'image-to-pdf' || tool === 'id-card' || tool === 'organize' || tool === 'compare' || !activeSession || !canvas || !previewSourcePage) return;
     const controller = new AbortController();
     activeSession
-      .renderPage(previewSourcePage, canvas, { maxWidth: 1100, maxHeight: 1400, signal: controller.signal, extraRotation: previewRotation })
+      .renderPage(previewSourcePage, canvas, {
+        maxWidth: 1100,
+        maxHeight: 1400,
+        signal: controller.signal,
+        extraRotation: previewRotation,
+        applyInlineStyle: false,
+        doubleBuffer: true
+      })
       .then(() => {
         if (controller.signal.aborted) return;
         canvas.style.width = '';
@@ -228,14 +283,66 @@ export function PdfWorkspace() {
     return () => controller.abort();
   }, [tool, activeSession, previewSourcePage, previewRotation]);
 
-  // Synchronized live PDF watermark overlay preview
+  // Synchronized live PDF watermark & page-numbers/header-footer overlay preview
   useEffect(() => {
     const base = canvasRef.current;
     const overlay = overlayRef.current;
     if (!base || !overlay) return;
-    if (tool !== 'watermark' || !activeSession || comparingOriginal || !base.width || !base.height) {
+    if ((tool !== 'watermark' && tool !== 'page-numbers') || !activeSession || comparingOriginal || !base.width || !base.height) {
       overlay.width = 1;
       overlay.height = 1;
+      return;
+    }
+
+    const w = base.width;
+    const h = base.height;
+
+    if (tool === 'page-numbers') {
+      let inRange = true;
+      try {
+        const selectedPages = getEngine().PageRange.parsePageSelection(pageNumbers.pages, previewPageCount);
+        inRange = selectedPages.includes(currentPage);
+      } catch {
+        inRange = false;
+      }
+      if (!inRange || (pageNumbers.skipFirstPage && currentPage === 1)) {
+        overlay.width = 1;
+        overlay.height = 1;
+        return;
+      }
+      overlay.width = w;
+      overlay.height = h;
+      const ctx = overlay.getContext('2d');
+      if (!ctx) return;
+      ctx.clearRect(0, 0, w, h);
+
+      // Approximate A4 point-to-pixel scale from current rendered canvas width
+      const pxPerPt = w / 595.28;
+      const marginPx = pageNumbers.marginMm * (72 / 25.4) * pxPerPt;
+      const fontPx = Math.max(10, pageNumbers.fontSize * pxPerPt);
+      ctx.font = `500 ${fontPx}px "PingFang SC", "Microsoft YaHei", system-ui, sans-serif`;
+      ctx.fillStyle = pageNumbers.color || '#475569';
+      ctx.textBaseline = 'middle';
+
+      const drawAligned = (text: string, align: 'left' | 'center' | 'right', vertical: 'top' | 'bottom') => {
+        const clean = text.trim();
+        if (!clean) return;
+        ctx.textAlign = align;
+        const x = align === 'left' ? marginPx : align === 'right' ? w - marginPx : w / 2;
+        const y = vertical === 'top' ? marginPx : h - marginPx;
+        ctx.fillText(clean, x, y, Math.max(40, w - marginPx * 2));
+      };
+
+      drawAligned(pageNumbers.headerText, pageNumbers.headerAlign, 'top');
+      drawAligned(pageNumbers.footerText, pageNumbers.footerAlign, 'bottom');
+
+      if (pageNumbers.pageNumberEnabled) {
+        const effectiveTotal = Math.max(1, previewPageCount - (pageNumbers.skipFirstPage ? 1 : 0)) + pageNumbers.startNumber - 1;
+        const displayNum = pageNumbers.startNumber + (currentPage - 1) - (pageNumbers.skipFirstPage ? 1 : 0);
+        const label = getEngine().PDFProcessor.formatPageNumberLabel(displayNum, effectiveTotal, pageNumbers.format);
+        const [vert, align] = pageNumbers.position.split('-') as ['top' | 'bottom', 'left' | 'center' | 'right'];
+        drawAligned(label, align || 'center', vert === 'top' ? 'top' : 'bottom');
+      }
       return;
     }
 
@@ -252,8 +359,6 @@ export function PdfWorkspace() {
       return;
     }
 
-    const w = base.width;
-    const h = base.height;
     overlay.width = w;
     overlay.height = h;
     const ctx = overlay.getContext('2d');
@@ -305,7 +410,7 @@ export function PdfWorkspace() {
       const [ax, ay] = PDF_WM_ANCHORS[watermark.position] || [0.5, 0.5];
       drawAt(ax * w, ay * h);
     }
-  }, [tool, activeSession, currentPage, previewPageCount, watermark, comparingOriginal, pageRenderSeq]);
+  }, [tool, activeSession, currentPage, previewPageCount, watermark, pageNumbers, comparingOriginal, pageRenderSeq]);
 
   // Image-to-PDF and the ID card sheet share one image rail; only the data and the wording differ.
   const imageRail =
@@ -637,6 +742,14 @@ export function PdfWorkspace() {
           <span>选择证件照片</span>
         </button>
       </div>
+    ) : tool === 'compare' ? (
+      <PdfCompareStage
+        sessionA={activeSession}
+        sessionB={compareTargetSession}
+        planA={activePlan}
+        planB={compareTargetPlan}
+        onImportPdf={() => pdfInputRef.current?.click()}
+      />
     ) : tool !== 'id-card' && !activeSession ? (
       <div className="flex flex-1 flex-col items-center justify-center p-8 text-center">
         <div
@@ -649,7 +762,7 @@ export function PdfWorkspace() {
           导入 PDF 开始处理
         </h2>
         <p className="mt-1.5 max-w-sm text-[13px]" style={{ color: 'var(--muted)' }}>
-          支持压缩、合并、拆分、加水印与转图片；所有后台任务在切换页面时不会中断。
+          支持压缩、合并、拆分、签名盖章、页码页眉、找不同、加水印与转长图；后台任务切换页面不中断。
         </p>
         <button
           type="button"
@@ -688,11 +801,32 @@ export function PdfWorkspace() {
               setPanDrag({ startX: e.clientX, startY: e.clientY, origX: pan.x, origY: pan.y });
             }}
             onPointerMove={(e) => {
+              if (sigDrag) {
+                const dx = (e.clientX - sigDrag.startX) / Math.max(1, sigDrag.boxW);
+                const dy = (e.clientY - sigDrag.startY) / Math.max(1, sigDrag.boxH);
+                if (sigDrag.mode === 'move') {
+                  updateSignaturePlacement(sigDrag.id, {
+                    xRatio: Math.max(0.02, Math.min(0.98, sigDrag.origX + dx)),
+                    yRatio: Math.max(0.02, Math.min(0.98, sigDrag.origY + dy))
+                  });
+                } else {
+                  updateSignaturePlacement(sigDrag.id, {
+                    widthRatio: Math.max(0.05, Math.min(0.75, sigDrag.origW + dx * 2))
+                  });
+                }
+                return;
+              }
               if (!panDrag) return;
               setPan({ x: panDrag.origX + e.clientX - panDrag.startX, y: panDrag.origY + e.clientY - panDrag.startY });
             }}
-            onPointerUp={() => setPanDrag(null)}
-            onPointerCancel={() => setPanDrag(null)}
+            onPointerUp={() => {
+              setPanDrag(null);
+              setSigDrag(null);
+            }}
+            onPointerCancel={() => {
+              setPanDrag(null);
+              setSigDrag(null);
+            }}
             className={`relative flex max-h-full max-w-full items-center justify-center transition-transform duration-100 ${
               spacePan || panDrag ? (panDrag ? 'cursor-grabbing' : 'cursor-grab') : ''
             }`}
@@ -711,9 +845,94 @@ export function PdfWorkspace() {
                   ref={overlayRef}
                   aria-hidden="true"
                   className={`pointer-events-none absolute inset-0 h-full w-full rounded ${
-                    tool === 'watermark' && !comparingOriginal ? 'opacity-100' : 'opacity-0'
+                    (tool === 'watermark' || tool === 'page-numbers') && !comparingOriginal ? 'opacity-100' : 'opacity-0'
                   }`}
                 />
+                {tool === 'sign' && !comparingOriginal && (
+                  <div className="pointer-events-none absolute inset-0 overflow-hidden rounded">
+                    {signaturePlacements
+                      .filter((pl) => pl.applyAll || pl.page === currentPage)
+                      .map((pl) => {
+                        const asset = signatureAssets.find((a) => a.id === pl.stampId);
+                        if (!asset) return null;
+                        const isSel = pl.id === selectedPlacementId;
+                        return (
+                          <div
+                            key={pl.id}
+                            onPointerDown={(e) => {
+                              if (spacePan) return;
+                              e.stopPropagation();
+                              selectSignaturePlacement(pl.id);
+                              const box = canvasRef.current?.getBoundingClientRect();
+                              if (!box) return;
+                              e.currentTarget.parentElement?.parentElement?.setPointerCapture?.(e.pointerId);
+                              setSigDrag({
+                                id: pl.id,
+                                mode: 'move',
+                                startX: e.clientX,
+                                startY: e.clientY,
+                                origX: pl.xRatio,
+                                origY: pl.yRatio,
+                                origW: pl.widthRatio,
+                                boxW: box.width,
+                                boxH: box.height
+                              });
+                            }}
+                            className="pointer-events-auto absolute cursor-move select-none"
+                            style={{
+                              left: `${pl.xRatio * 100}%`,
+                              top: `${pl.yRatio * 100}%`,
+                              width: `${pl.widthRatio * 100}%`,
+                              transform: `translate(-50%, -50%) rotate(${pl.rotation}deg)`,
+                              opacity: pl.opacity,
+                              outline: isSel ? '2px solid #2563eb' : '1px dashed rgba(37, 99, 235, 0.45)',
+                              outlineOffset: '3px',
+                              borderRadius: '4px'
+                            }}
+                          >
+                            <img src={asset.dataUrl} alt={asset.name} draggable={false} className="block h-auto w-full select-none" />
+                            {isSel && (
+                              <>
+                                <button
+                                  type="button"
+                                  title="删除签章"
+                                  onPointerDown={(e) => e.stopPropagation()}
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    removeSignaturePlacement(pl.id);
+                                  }}
+                                  className="absolute -top-2.5 -right-2.5 grid h-5 w-5 place-items-center rounded-full bg-red-500 text-white shadow-sm"
+                                >
+                                  ×
+                                </button>
+                                <div
+                                  title="拖拽缩放签章大小"
+                                  onPointerDown={(e) => {
+                                    e.stopPropagation();
+                                    const box = canvasRef.current?.getBoundingClientRect();
+                                    if (!box) return;
+                                    e.currentTarget.parentElement?.parentElement?.parentElement?.setPointerCapture?.(e.pointerId);
+                                    setSigDrag({
+                                      id: pl.id,
+                                      mode: 'resize',
+                                      startX: e.clientX,
+                                      startY: e.clientY,
+                                      origX: pl.xRatio,
+                                      origY: pl.yRatio,
+                                      origW: pl.widthRatio,
+                                      boxW: box.width,
+                                      boxH: box.height
+                                    });
+                                  }}
+                                  className="absolute -right-2 -bottom-2 h-4 w-4 cursor-nwse-resize rounded-xs border-2 border-white bg-blue-600 shadow-xs"
+                                />
+                              </>
+                            )}
+                          </div>
+                        );
+                      })}
+                  </div>
+                )}
               </>
             )}
           </div>
@@ -758,7 +977,7 @@ export function PdfWorkspace() {
               </span>
             )}
 
-            {tool === 'watermark' && (
+            {(tool === 'watermark' || tool === 'sign' || tool === 'page-numbers') && (
               <>
                 <span className="h-3.5 w-px" style={{ background: 'var(--line)' }} />
                 <button
@@ -1154,6 +1373,325 @@ export function PdfWorkspace() {
         </div>
       )}
 
+      {tool === 'sign' && <PdfSignaturePanel />}
+
+      {tool === 'page-numbers' && (
+        <div className="space-y-2.5">
+          <label className="flex cursor-pointer items-center justify-between rounded-xl border px-3 py-2" style={{ background: 'var(--bg-subtle)', borderColor: 'var(--line)' }}>
+            <span className="text-[13px] font-semibold" style={{ color: 'var(--ink-2)' }}>
+              添加自动页码
+            </span>
+            <input
+              type="checkbox"
+              checked={pageNumbers.pageNumberEnabled}
+              onChange={(e) => patchPageNumbers({ pageNumberEnabled: e.target.checked })}
+              className="h-4 w-4 accent-blue-600"
+            />
+          </label>
+
+          {pageNumbers.pageNumberEnabled && (
+            <div className="grid grid-cols-2 gap-2">
+              <label className="block text-[13px] font-semibold" style={{ color: 'var(--ink-2)' }}>
+                页码样式
+                <select
+                  value={pageNumbers.format}
+                  onChange={(e) => patchPageNumbers({ format: e.target.value as typeof pageNumbers.format })}
+                  className="mt-1 h-8 w-full rounded-lg border px-2 text-[12.5px]"
+                  style={{ background: 'var(--bg-surface)', borderColor: 'var(--line-strong)', color: 'var(--ink)' }}
+                >
+                  <option value="zh-total">第 1 / 12 页</option>
+                  <option value="slash">1 / 12</option>
+                  <option value="plain">1</option>
+                  <option value="dash">- 1 -</option>
+                  <option value="en">Page 1 of 12</option>
+                </select>
+              </label>
+              <label className="block text-[13px] font-semibold" style={{ color: 'var(--ink-2)' }}>
+                页码位置
+                <select
+                  value={pageNumbers.position}
+                  onChange={(e) => patchPageNumbers({ position: e.target.value as typeof pageNumbers.position })}
+                  className="mt-1 h-8 w-full rounded-lg border px-2 text-[12.5px]"
+                  style={{ background: 'var(--bg-surface)', borderColor: 'var(--line-strong)', color: 'var(--ink)' }}
+                >
+                  <option value="bottom-center">底部居中</option>
+                  <option value="bottom-right">底部靠右</option>
+                  <option value="bottom-left">底部靠左</option>
+                  <option value="top-right">顶部靠右</option>
+                  <option value="top-center">顶部居中</option>
+                  <option value="top-left">顶部靠左</option>
+                </select>
+              </label>
+            </div>
+          )}
+
+          <div className="grid grid-cols-2 gap-2">
+            <label className="block text-[13px] font-semibold" style={{ color: 'var(--ink-2)' }}>
+              起始编号
+              <NumericInput
+                min={0}
+                max={9999}
+                fallback={1}
+                value={pageNumbers.startNumber}
+                onCommit={(v) => patchPageNumbers({ startNumber: v })}
+                className="mt-1 h-8 w-full rounded-lg border px-2 font-mono text-[13px]"
+              />
+            </label>
+            <label className="block text-[13px] font-semibold" style={{ color: 'var(--ink-2)' }}>
+              字号 (pt)
+              <NumericInput
+                min={8}
+                max={24}
+                fallback={11}
+                value={pageNumbers.fontSize}
+                onCommit={(v) => patchPageNumbers({ fontSize: v })}
+                className="mt-1 h-8 w-full rounded-lg border px-2 font-mono text-[13px]"
+              />
+            </label>
+          </div>
+
+          <label className="flex cursor-pointer items-center gap-2 text-[13px] font-semibold" style={{ color: 'var(--ink-2)' }}>
+            <input
+              type="checkbox"
+              checked={pageNumbers.skipFirstPage}
+              onChange={(e) => patchPageNumbers({ skipFirstPage: e.target.checked })}
+              className="h-4 w-4 accent-blue-600"
+            />
+            <span>首页不加页码/页眉（跳过封面）</span>
+          </label>
+
+          <label className="block text-[13px] font-semibold" style={{ color: 'var(--ink-2)' }}>
+            页眉文字（可选）
+            <div className="mt-1 flex gap-1.5">
+              <input
+                type="text"
+                value={pageNumbers.headerText}
+                onChange={(e) => patchPageNumbers({ headerText: e.target.value })}
+                placeholder="例如：XX项目技术方案 · 内部评审"
+                className="h-8 min-w-0 flex-1 rounded-lg border px-2.5 text-[13px] font-normal"
+                style={{ background: 'var(--bg-surface)', borderColor: 'var(--line-strong)', color: 'var(--ink)' }}
+              />
+              <select
+                value={pageNumbers.headerAlign}
+                onChange={(e) => patchPageNumbers({ headerAlign: e.target.value as 'left' | 'center' | 'right' })}
+                className="h-8 rounded-lg border px-1.5 text-[12px]"
+                style={{ background: 'var(--bg-surface)', borderColor: 'var(--line-strong)', color: 'var(--ink)' }}
+              >
+                <option value="left">左</option>
+                <option value="center">中</option>
+                <option value="right">右</option>
+              </select>
+            </div>
+          </label>
+
+          <label className="block text-[13px] font-semibold" style={{ color: 'var(--ink-2)' }}>
+            自定义页脚文字（可选）
+            <div className="mt-1 flex gap-1.5">
+              <input
+                type="text"
+                value={pageNumbers.footerText}
+                onChange={(e) => patchPageNumbers({ footerText: e.target.value })}
+                placeholder="例如：机密文件 · 请勿外传"
+                className="h-8 min-w-0 flex-1 rounded-lg border px-2.5 text-[13px] font-normal"
+                style={{ background: 'var(--bg-surface)', borderColor: 'var(--line-strong)', color: 'var(--ink)' }}
+              />
+              <select
+                value={pageNumbers.footerAlign}
+                onChange={(e) => patchPageNumbers({ footerAlign: e.target.value as 'left' | 'center' | 'right' })}
+                className="h-8 rounded-lg border px-1.5 text-[12px]"
+                style={{ background: 'var(--bg-surface)', borderColor: 'var(--line-strong)', color: 'var(--ink)' }}
+              >
+                <option value="left">左</option>
+                <option value="center">中</option>
+                <option value="right">右</option>
+              </select>
+            </div>
+          </label>
+
+          <div className="grid grid-cols-2 gap-2">
+            <label className="block text-[13px] font-semibold" style={{ color: 'var(--ink-2)' }}>
+              边距 (mm)
+              <NumericInput
+                min={6}
+                max={30}
+                fallback={12}
+                value={pageNumbers.marginMm}
+                onCommit={(v) => patchPageNumbers({ marginMm: v })}
+                className="mt-1 h-8 w-full rounded-lg border px-2 font-mono text-[13px]"
+              />
+            </label>
+            <label className="block text-[13px] font-semibold" style={{ color: 'var(--ink-2)' }}>
+              文字颜色
+              <div className="mt-1 flex h-8 items-center gap-1.5">
+                <input
+                  type="color"
+                  value={pageNumbers.color}
+                  onChange={(e) => patchPageNumbers({ color: e.target.value })}
+                  className="h-7 w-9 cursor-pointer rounded border p-0.5"
+                  style={{ borderColor: 'var(--line-strong)' }}
+                />
+                {['#475569', '#111827', '#2563eb', '#dc2626'].map((sw) => (
+                  <button
+                    key={sw}
+                    type="button"
+                    onClick={() => patchPageNumbers({ color: sw })}
+                    className="h-5 w-5 rounded-full border"
+                    style={{ background: sw, borderColor: pageNumbers.color === sw ? 'var(--accent)' : 'var(--line-strong)' }}
+                  />
+                ))}
+              </div>
+            </label>
+          </div>
+
+          <label className="block text-[13px] font-semibold" style={{ color: 'var(--ink-2)' }}>
+            生效页码（留空表示全部）
+            <input
+              type="text"
+              placeholder="例如：1-10"
+              value={pageNumbers.pages}
+              onChange={(e) => patchPageNumbers({ pages: e.target.value })}
+              className="mt-1 h-8 w-full rounded-lg border px-2.5 text-[13px] font-normal"
+              style={{ background: 'var(--bg-surface)', borderColor: 'var(--line-strong)', color: 'var(--ink)' }}
+            />
+          </label>
+        </div>
+      )}
+
+      {tool === 'compare' && (
+        <div className="space-y-3">
+          <div className="space-y-2 rounded-xl border p-2.5" style={{ background: 'var(--bg-subtle)', borderColor: 'var(--line)' }}>
+            <div className="text-[12.5px]">
+              <span className="font-bold" style={{ color: 'var(--muted)' }}>
+                基准文档 A（左侧选中）：
+              </span>
+              <span className="font-semibold" style={{ color: 'var(--ink)' }}>
+                {activeSession ? activeSession.file.name : '未选择'}
+              </span>
+            </div>
+            <label className="block text-[12.5px] font-bold" style={{ color: 'var(--muted)' }}>
+              对比文档 B
+              <select
+                value={compareTargetSession?.id ?? ''}
+                onChange={(e) => patchCompare({ targetSessionId: e.target.value || null })}
+                className="mt-1 h-8 w-full rounded-lg border px-2 text-[13px] font-semibold"
+                style={{ background: 'var(--bg-surface)', borderColor: 'var(--line-strong)', color: 'var(--ink)' }}
+              >
+                {sessions.filter((s) => s.id !== activeId).length === 0 ? (
+                  <option value="">请先添加第二份 PDF</option>
+                ) : (
+                  sessions
+                    .filter((s) => s.id !== activeId)
+                    .map((s) => (
+                      <option key={s.id} value={s.id}>
+                        {s.file.name}（{s.numPages} 页）
+                      </option>
+                    ))
+                )}
+              </select>
+            </label>
+          </div>
+
+          <div className="grid grid-cols-3 gap-1 rounded-xl p-1" style={{ background: 'var(--bg-well)' }}>
+            {(
+              [
+                ['overlay', '红绿叠加'],
+                ['highlight', '差异热区'],
+                ['side-by-side', '并排对比']
+              ] as const
+            ).map(([m, label]) => (
+              <button
+                key={m}
+                type="button"
+                onClick={() => patchCompare({ viewMode: m })}
+                className="h-7 rounded-lg text-[12px] font-semibold"
+                style={{
+                  background: compare.viewMode === m ? 'var(--bg-surface)' : 'transparent',
+                  color: compare.viewMode === m ? 'var(--accent)' : 'var(--muted)'
+                }}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+
+          <label className="block text-[13px] font-semibold" style={{ color: 'var(--ink-2)' }}>
+            <div className="flex justify-between">
+              <span>差异敏感度阈值</span>
+              <span className="font-mono" style={{ color: 'var(--accent)' }}>
+                {compare.threshold}
+              </span>
+            </div>
+            <input
+              type="range"
+              min={8}
+              max={64}
+              value={compare.threshold}
+              onChange={(e) => patchCompare({ threshold: Number(e.target.value) })}
+              className="w-full"
+            />
+          </label>
+
+          <button
+            type="button"
+            onClick={runCompareScan}
+            disabled={!activeSession || !compareTargetSession || pdfTaskRunning}
+            className="inline-flex h-8 w-full items-center justify-center gap-1.5 rounded-xl border text-[13px] font-bold disabled:opacity-40"
+            style={{ background: 'var(--accent-soft)', borderColor: 'var(--accent-border)', color: 'var(--accent)' }}
+          >
+            <GitCompare className="h-3.5 w-3.5" />
+            <span>全本逐页扫描差异</span>
+          </button>
+
+          {compareResults.length > 0 && (
+            <div className="space-y-1.5">
+              <div className="flex items-center justify-between text-[12px] font-bold">
+                <span style={{ color: 'var(--muted)' }}>
+                  扫描结果（{compareResults.filter((r) => r.hasDiff).length}/{compareResults.length} 页有差异）
+                </span>
+              </div>
+              <div className="max-h-[150px] space-y-1 overflow-y-auto">
+                {compareResults.map((r) => (
+                  <button
+                    key={r.page}
+                    type="button"
+                    onClick={() => setPage(r.page)}
+                    className="flex w-full items-center justify-between rounded-lg border px-2.5 py-1 text-[12px] font-semibold"
+                    style={{
+                      background: currentPage === r.page ? 'var(--accent-soft)' : 'var(--bg-subtle)',
+                      borderColor: currentPage === r.page ? 'var(--accent-border)' : 'var(--line)'
+                    }}
+                  >
+                    <span style={{ color: 'var(--ink)' }}>第 {r.page} 页</span>
+                    <span
+                      className="font-mono"
+                      style={{ color: r.hasDiff ? 'var(--danger)' : 'var(--success)' }}
+                    >
+                      {r.status === 'added'
+                        ? '文档 B 新增页'
+                        : r.status === 'removed'
+                          ? '文档 B 缺失页'
+                          : r.hasDiff
+                            ? `差异 ${(r.diffRatio * 100).toFixed(2)}%`
+                            : '一致'}
+                    </span>
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+
+          <label className="flex cursor-pointer items-center gap-2 text-[12.5px] font-semibold" style={{ color: 'var(--ink-2)' }}>
+            <input
+              type="checkbox"
+              checked={compare.onlyDiffExport}
+              onChange={(e) => patchCompare({ onlyDiffExport: e.target.checked })}
+              className="h-4 w-4 accent-blue-600"
+            />
+            <span>导出报告时仅保留存在差异的页面</span>
+          </label>
+        </div>
+      )}
+
       {tool === 'image-to-pdf' && (
         <div className="space-y-2.5">
           <div className="grid grid-cols-2 gap-2">
@@ -1200,6 +1738,28 @@ export function PdfWorkspace() {
 
       {tool === 'pdf-to-image' && (
         <div className="space-y-2.5">
+          <div className="grid grid-cols-2 gap-1 rounded-xl p-1" style={{ background: 'var(--bg-well)' }}>
+            {(
+              [
+                ['pages', '逐页导出（ZIP）'],
+                ['long-image', '合成连续长图']
+              ] as const
+            ).map(([m, label]) => (
+              <button
+                key={m}
+                type="button"
+                onClick={() => patchPdfToImage({ outputMode: m })}
+                className="h-7 rounded-lg text-[12.5px] font-semibold"
+                style={{
+                  background: pdfToImage.outputMode === m ? 'var(--bg-surface)' : 'transparent',
+                  color: pdfToImage.outputMode === m ? 'var(--accent)' : 'var(--muted)'
+                }}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+
           <label className="block text-[13px] font-semibold" style={{ color: 'var(--ink-2)' }}>
             页码范围（按整理后页码，留空表示全部）
             <input
@@ -1235,10 +1795,43 @@ export function PdfWorkspace() {
                 <option value={96}>96 DPI · 快速</option>
                 <option value={144}>144 DPI · 标准</option>
                 <option value={200}>200 DPI · 清晰</option>
-                <option value={300}>300 DPI · 高精</option>
+                {pdfToImage.outputMode === 'pages' && <option value={300}>300 DPI · 高精</option>}
               </select>
             </label>
           </div>
+
+          {pdfToImage.outputMode === 'long-image' && (
+            <div className="space-y-2 rounded-xl border p-2.5" style={{ background: 'var(--bg-subtle)', borderColor: 'var(--line)' }}>
+              <label className="block text-[12.5px] font-semibold" style={{ color: 'var(--ink-2)' }}>
+                <div className="flex justify-between">
+                  <span>页间留白间距</span>
+                  <span className="font-mono" style={{ color: 'var(--accent)' }}>
+                    {pdfToImage.gap}px
+                  </span>
+                </div>
+                <input
+                  type="range"
+                  min={0}
+                  max={48}
+                  value={pdfToImage.gap}
+                  onChange={(e) => patchPdfToImage({ gap: Number(e.target.value) })}
+                  className="w-full"
+                />
+              </label>
+              <label className="flex cursor-pointer items-center gap-2 text-[12.5px] font-semibold" style={{ color: 'var(--ink-2)' }}>
+                <input
+                  type="checkbox"
+                  checked={pdfToImage.divider}
+                  onChange={(e) => patchPdfToImage({ divider: e.target.checked })}
+                  className="h-4 w-4 accent-blue-600"
+                />
+                <span>页间绘制柔和分割线</span>
+              </label>
+              <p className="text-[11.5px]" style={{ color: 'var(--muted)' }}>
+                逐页流式拼接，页数较多时自动调整清晰度以防浏览器画布超限，适合发微信/钉钉长图浏览。
+              </p>
+            </div>
+          )}
         </div>
       )}
 
@@ -1518,6 +2111,39 @@ export function PdfWorkspace() {
         onRun: runWatermark
       };
     }
+    if (tool === 'sign') {
+      return {
+        filename: signFilename,
+        onFilename: setSignFilename,
+        placeholder: '签章输出文件名（可选）',
+        disabled: !activeSession || !signaturePlacements.length || pdfTaskRunning,
+        label: `导出签章 PDF（${signaturePlacements.length} 处）`,
+        onRun: runSignPdf
+      };
+    }
+    if (tool === 'page-numbers') {
+      return {
+        filename: pageNumbers.filename,
+        onFilename: (v: string) => patchPageNumbers({ filename: v }),
+        placeholder: '输出文件名（可选）',
+        disabled:
+          !activeSession ||
+          (!pageNumbers.pageNumberEnabled && !pageNumbers.headerText.trim() && !pageNumbers.footerText.trim()) ||
+          pdfTaskRunning,
+        label: '写入页码/页眉页脚并下载',
+        onRun: runPageNumbers
+      };
+    }
+    if (tool === 'compare') {
+      return {
+        filename: compare.filename,
+        onFilename: (v: string) => patchCompare({ filename: v }),
+        placeholder: '差异报告文件名（可选）',
+        disabled: !activeSession || !compareTargetSession || pdfTaskRunning,
+        label: '导出视觉差异报告 PDF',
+        onRun: runExportCompareReport
+      };
+    }
     if (tool === 'image-to-pdf') {
       return {
         filename: imageToPdf.filename,
@@ -1538,12 +2164,13 @@ export function PdfWorkspace() {
         onRun: runIdCardSheet
       };
     }
+    const fmtName = pdfToImage.format === 'image/png' ? 'PNG' : 'JPG';
     return {
       filename: pdfToImage.filename,
       onFilename: (v: string) => patchPdfToImage({ filename: v }),
-      placeholder: '输出图片名称前缀（可选）',
+      placeholder: pdfToImage.outputMode === 'long-image' ? '长图文件名（可选）' : '输出图片名称前缀（可选）',
       disabled: !activeSession || pdfTaskRunning,
-      label: `转换为 ${pdfToImage.format === 'image/png' ? 'PNG' : 'JPG'} 并下载`,
+      label: pdfToImage.outputMode === 'long-image' ? `合成连续长图（${fmtName}）并下载` : `转换为 ${fmtName} 并下载`,
       onRun: runPdfToImages
     };
   };

@@ -3,14 +3,15 @@ import {
   ArrowRight,
   Droplets,
   FileArchive,
-  FileStack,
-  Grid3X3,
+  FileImage,
+  GitCompare,
+  IdCard,
   Image as ImageIcon,
-  Layers,
-  LayoutGrid,
   Minimize2,
+  PenTool,
   ScanFace,
   ShieldCheck,
+  UserSquare2,
   Zap
 } from 'lucide-react';
 import { useAppStore } from '../stores/useAppStore';
@@ -36,13 +37,13 @@ export function HomeView() {
 
   const cards = [
     { title: '图片加水印', desc: '文字/Logo、办公模板、本地预设库', icon: Droplets, onClick: () => goImage('watermark') },
-    { title: '人脸打码', desc: '本地 AI 识脸与表情联动可爱贴纸/马赛克', icon: ScanFace, onClick: () => goImage('redact') },
-    { title: '拼接图片', desc: '纵/横/网格拼图，拖拉换位与工程存档', icon: Layers, onClick: () => goImage('stitch') },
-    { title: '图片切割', desc: '自动识线或九宫格切图，支持拆散重拼', icon: Grid3X3, onClick: () => goImage('split') },
-    { title: '压缩图片', desc: '单张或批量减小体积，支持 ZIP 打包', icon: Minimize2, onClick: () => goImage('compress') },
-    { title: 'PDF 页面整理', desc: '缩略图拖拽调序、单页旋转与删页', icon: LayoutGrid, onClick: () => goPdf('organize') },
-    { title: '压缩 PDF', desc: '无损整理或图像强力压缩，后台不中断', icon: FileArchive, onClick: () => goPdf('compress') },
-    { title: '合并 PDF', desc: '多份文档自由排序，原样合为一份', icon: FileStack, onClick: () => goPdf('merge') }
+    { title: '打码与标注', desc: 'AI 识脸、可爱贴纸、横条/红框/箭头标注', icon: ScanFace, onClick: () => goImage('redact') },
+    { title: 'AI 证件照换底', desc: '离线人像抠图，白/蓝/红换底与一寸二寸裁切', icon: UserSquare2, onClick: () => goImage('id-photo') },
+    { title: '精准压缩图片', desc: '指定目标体积（如 ≤200KB）自动搜最优画质', icon: Minimize2, onClick: () => goImage('compress') },
+    { title: 'PDF 签名盖章', desc: '手写签字或红章去白底，画布拖拽落款导出', icon: PenTool, onClick: () => goPdf('sign') },
+    { title: '证件合成 A4', desc: '身份证正反面标准尺寸排版与防盗水印压平', icon: IdCard, onClick: () => goPdf('id-card') },
+    { title: 'PDF 视觉找不同', desc: 'V1/V2 合同报价单本地逐页红绿高亮对比', icon: GitCompare, onClick: () => goPdf('compare') },
+    { title: 'PDF 转长图 / 整理', desc: '一键连续长图、页面拖拽调序、页码页眉', icon: FileImage, onClick: () => goPdf('pdf-to-image') }
   ];
 
   return (
@@ -82,7 +83,7 @@ export function HomeView() {
             className="gemini-btn inline-flex h-9 items-center gap-2 rounded-full px-5 text-[13px] font-semibold"
           >
             <ImageIcon className="h-4 w-4" />
-            <span>打开图片工作台（9 工具）</span>
+            <span>打开图片工作台（10 工具）</span>
             <ArrowRight className="h-3.5 w-3.5" />
           </button>
           <button
@@ -91,7 +92,7 @@ export function HomeView() {
             className="studio-secondary-btn inline-flex h-9 items-center gap-2 rounded-full border px-5 text-[13px] font-semibold hover:-translate-y-0.5 active:scale-95"
           >
             <FileArchive className="h-4 w-4" />
-            <span>打开 PDF 工作台（8 工具）</span>
+            <span>打开 PDF 工作台（11 工具）</span>
           </button>
         </div>
 

@@ -36,7 +36,15 @@
     onStage?.('encode');
     const blob = await toBlob(canvas, type, type === 'image/png' ? undefined : quality);
     assertNotAborted(signal);
-    return { blob, width, height, extension: mimeToExtension[type], wasDownsampled: width < source.width || height < source.height };
+    const actualType = blob.type && mimeToExtension[blob.type] ? blob.type : type;
+    return {
+      blob,
+      width,
+      height,
+      outputType: actualType,
+      extension: mimeToExtension[actualType] || mimeToExtension[type] || 'png',
+      wasDownsampled: width < source.width || height < source.height
+    };
   };
 
   ns.ImageProcessor = { processImage, mimeToExtension, toBlob };

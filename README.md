@@ -1,4 +1,4 @@
-# 图片 + PDF 本地工作台（v2.1.1 Studio）
+# 图片 + PDF 本地工作台（v2.1.2 Studio）
 
 > **纯本地、零上传、离线可用的现代图片与 PDF 桌面级工作台**  
 > 前端 **Gemini Neon** + 后端 **GPT6.2Sol**
@@ -53,10 +53,10 @@ npm test
 # 本地开发预览
 npm run dev
 
-# 1. 构建可部署的 Web 静态版（输出 dist/ 与 release/图片PDF工作台-v2.1.1-Web部署包.zip）
+# 1. 构建可部署的 Web 静态版（输出 dist/ 与 release/图片PDF工作台-v2.1.2-Web部署包.zip）
 npm run build:web
 
-# 2. 构建双击即用的离线单文件 HTML（输出 release/图片PDF工作台-v2.1.1-离线单文件.html）
+# 2. 构建双击即用的离线单文件 HTML（输出 release/图片PDF工作台-v2.1.2-离线单文件.html）
 npm run build:single
 
 # 一键同时产出 Web 部署包 + 离线单文件 HTML
@@ -67,16 +67,20 @@ npm run build:release
 
 ## 部署指南（Web 版）
 
-运行 `npm run build:web` 后，将 `dist/` 目录（或 `release/图片PDF工作台-v2.1.1-Web部署包.zip` 解压后的全部文件）直接部署到任意静态托管平台即可：
+运行 `npm run build:web` 后，将 `dist/` 目录（或 `release/图片PDF工作台-v2.1.2-Web部署包.zip` 解压后的全部文件）直接部署到任意静态托管平台即可：
 
 - **Cloudflare Pages / Netlify**：直接拖入 `dist/` 文件夹即可上线，已内置 `_headers` 自动启用 `/assets/*` 永久强缓存。
 - **Vercel / GitHub Pages / Nginx**：构建命令填 `npm run build`，输出目录填 `dist`，零后端依赖。
-- **离线分发**：直接发送 `图片PDF工作台-v2.1.1-离线单文件.html`，浏览器双击打开。离线包内置 17 个工具所需的资源；剪贴板和人脸识别仍取决于浏览器支持。
+- **离线分发**：直接发送 `图片PDF工作台-v2.1.2-离线单文件.html`，浏览器双击打开。离线包内置 17 个工具所需的资源；剪贴板和人脸识别仍取决于浏览器支持。
 
 ---
 
 ## 更新日志（Changelog）
 
+- **v2.1.2**（2026-11-20）：
+  - 合入 PR #3：PDF「页面整理」后的删页、调序与旋转全面贯通至 **拆分、PDF 转图片、水印预览及页码范围**；
+  - 调整尺寸切入百分比模式统一以 `100%` 起步；PDF 页码范围支持全角数字、全角连字符与两侧空格；
+  - 修复大图切块偶发少 1px 边界问题，对齐水印预设与滑块画质下限至 `40%`，并补充 `npm test` 回归测试。
 - **v2.1.1**（2026-11-20）：
   - 修复 Logo 水印缺图仍可导出、复制和批量处理的问题；超 2 MiB 的 Logo 预设明确报错，不再静默丢图。
   - 各图片工具分别记住输出格式和质量；首次用拼图仍默认 PNG，首次用压缩仍默认 JPG。

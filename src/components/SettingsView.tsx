@@ -1,5 +1,5 @@
 import { motion } from 'motion/react';
-import { Loader2, Moon, ShieldCheck, Sun } from 'lucide-react';
+import { ExternalLink, Github, Loader2, Moon, ShieldCheck, Sun } from 'lucide-react';
 import { supportsNativeJpegClipboard } from '../bridge/engine';
 import { CopyImageFormat, useAppStore } from '../stores/useAppStore';
 import { useTaskStore } from '../stores/useTaskStore';
@@ -141,6 +141,30 @@ export function SettingsView() {
                 </option>
               ))}
             </select>
+          </div>
+
+          <div
+            className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border p-4"
+            style={{ background: 'var(--bg-subtle)', borderColor: 'var(--line)' }}
+          >
+            <div>
+              <p className="text-[14px] font-bold" style={{ color: 'var(--ink)' }}>
+                开源仓库（GitHub）
+              </p>
+              <p className="mt-0.5 text-[13px]" style={{ color: 'var(--muted)' }}>
+                查看完整源码、提交反馈或自行构建离线单文件与 Web 部署版。
+              </p>
+            </div>
+            <a
+              href="https://github.com/haifengyina2333/image-pdf-studio"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="studio-secondary-btn inline-flex h-9 items-center gap-2 rounded-full border px-4 text-[13.5px] font-semibold"
+            >
+              <Github className="h-4 w-4" />
+              <span>image-pdf-studio</span>
+              <ExternalLink className="h-3.5 w-3.5 opacity-75" />
+            </a>
           </div>
 
           <div className="flex items-center gap-2 text-[13px]" style={{ color: 'var(--muted)' }}>

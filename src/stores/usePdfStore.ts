@@ -404,9 +404,10 @@ export const usePdfStore = create<PdfState>((set, get) => ({
   },
 
   setPage: (page) => {
-    const active = get().sessions.find((s) => s.id === get().activeId);
+    const { sessions, activeId, pagePlans } = get();
+    const active = sessions.find((s) => s.id === activeId);
     if (!active) return;
-    set({ currentPage: Math.max(1, Math.min(active.numPages, page)) });
+    set({ currentPage: Math.max(1, Math.min(pagePlans[active.id]?.length ?? active.numPages, page)) });
   },
 
   removeSession: async (id) => {
@@ -484,7 +485,7 @@ export const usePdfStore = create<PdfState>((set, get) => ({
   },
 
   removeOrganizePage: (uid) => {
-    const { activeId, pagePlans } = get();
+    const { activeId, pagePlans, currentPage } = get();
     if (!activeId) return;
     const plan = pagePlans[activeId];
     if (!plan) return;
@@ -492,7 +493,9 @@ export const usePdfStore = create<PdfState>((set, get) => ({
       useAppStore.getState().notify('至少需要保留 1 页', 'error');
       return;
     }
-    set({ pagePlans: { ...pagePlans, [activeId]: plan.filter((p) => p.uid !== uid) } });
+    const next = plan.filter((p) => p.uid !== uid);
+    if (next.length === plan.length) return;
+    set({ pagePlans: { ...pagePlans, [activeId]: next }, currentPage: Math.min(currentPage, next.length) });
   },
 
   restoreOrganizePages: () => {
@@ -687,10 +690,12 @@ export const usePdfStore = create<PdfState>((set, get) => ({
   },
 
   runSplit: async () => {
-    const { sessions, activeId, split } = get();
+    const { sessions, activeId, split, pagePlans } = get();
     const session = sessions.find((s) => s.id === activeId);
     if (!session) return;
     const engine = getEngine();
+    const plan = snapshotPagePlan(session, pagePlans[session.id]) ??
+      Array.from({ length: session.numPages }, (_, i) => ({ sourcePage: i + 1, rotation: 0 }));
     const prefix = cleanStem(split.filename, `${session.file.name.replace(/\.pdf$/i, '')}-拆分`);
 
     await useTaskStore.getState().runTask(
@@ -699,9 +704,9 @@ export const usePdfStore = create<PdfState>((set, get) => ({
         await ensurePdfLib();
         const groups =
           split.mode === 'every'
-            ? Array.from({ length: session.numPages }, (_, i) => [{ sourcePage: i + 1, rotation: 0 }])
-            : engine.PageRange.parseSplitGroups(split.ranges, session.numPages).map((group) =>
-                group.pages.map((p) => ({ sourcePage: p, rotation: 0 }))
+            ? plan.map((page) => [page])
+            : engine.PageRange.parseSplitGroups(split.ranges, plan.length).map((group) =>
+                group.pages.map((p) => plan[p - 1])
               );
         const res = await engine.PDFProcessor.createPDFParts(session.file, groups, {
           signal,
@@ -809,24 +814,29 @@ export const usePdfStore = create<PdfState>((set, get) => ({
   },
 
   runPdfToImages: async () => {
-    const { sessions, activeId, pdfToImage } = get();
+    const { sessions, activeId, pdfToImage, pagePlans } = get();
     const session = sessions.find((s) => s.id === activeId);
     if (!session) return;
     const engine = getEngine();
+    const plan = snapshotPagePlan(session, pagePlans[session.id]);
     const prefix = cleanStem(pdfToImage.filename, `${session.file.name.replace(/\.pdf$/i, '')}-图片`);
 
     await useTaskStore.getState().runTask(
       { kind: 'pdf-to-image', title: `PDF 转图片：${session.file.name}`, initialStage: '正在解析页码…' },
       async ({ signal, report }) => {
-        const pages = engine.PageRange.parsePageSelection(pdfToImage.pages, session.numPages);
+        const pages = engine.PageRange.parsePageSelection(pdfToImage.pages, plan?.length ?? session.numPages);
+        const input = pages.map((outputPage) => ({
+          ...(plan?.[outputPage - 1] ?? { sourcePage: outputPage, rotation: 0 }),
+          outputPage
+        }));
         const res = await engine.PDFProcessor.pdfToImages(
           session,
-          pages,
+          input,
           { type: pdfToImage.format, quality: pdfToImage.quality, dpi: pdfToImage.dpi },
           {
             signal,
-            onProgress: ({ stage, current = 1, total = pages.length, pageNumber }) =>
-              report(`正在${stage === 'render' ? '渲染' : '编码'} ${current}/${total}（第 ${pageNumber || current} 页）…`, {
+            onProgress: ({ stage, current = 1, total = pages.length }) =>
+              report(`正在${stage === 'render' ? '渲染' : '编码'} ${current}/${total}（第 ${pages[current - 1] ?? current} 页）…`, {
                 current,
                 total
               })

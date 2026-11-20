@@ -1372,7 +1372,7 @@ export function ImageWorkspace() {
               onChange={(e) => {
                 const nextMode = e.target.value as typeof resize.mode;
                 if (nextMode === 'percent') {
-                  patchResize({ mode: nextMode, value: resize.value > 400 ? 100 : resize.value });
+                  patchResize({ mode: nextMode });
                 } else if (nextMode === 'width' || nextMode === 'height') {
                   const fallbackDim =
                     nextMode === 'height'

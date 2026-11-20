@@ -207,7 +207,7 @@
       for (let index = 0; index < pages.length; index += 1) {
         const item = pages[index], pageNumber = item.sourcePage; if (!Number.isInteger(pageNumber) || pageNumber < 1 || pageNumber > session.numPages) throw new Error(`页码必须在 1-${session.numPages} 之间。`); assertNotAborted(signal); onProgress?.({ stage: 'render', current: index + 1, total: pages.length, pageNumber });
         const info = await session.getPageInfo(pageNumber, signal, item.rotation); const scale = dpi / 72, width = info.width * scale, height = info.height * scale;
-        if (Math.max(width, height) > 16384 || width * height > 32_000_000) throw new Error(`第 ${pageNumber} 页超过安全画布尺寸，请降低输出 DPI 后重试。`);
+        if (Math.max(width, height) > 16384 || width * height > 32_000_000) throw new Error(`第 ${item.outputPage} 页超过安全画布尺寸，请降低输出 DPI 后重试。`);
         const rendered = await session.renderPage(pageNumber, canvas, { maxWidth: width, maxHeight: height, outputScale: 1, background: '#ffffff', intent: 'print', signal, extraRotation: item.rotation }); assertNotAborted(signal);
         onProgress?.({ stage: 'encode', current: index + 1, total: pages.length, pageNumber }); const blob = await canvasToBlob(canvas, type, type === 'image/png' ? undefined : quality); assertNotAborted(signal); results.push({ blob, pageNumber, outputPage: item.outputPage, width: rendered.renderedWidth, height: rendered.renderedHeight });
       }

@@ -4,8 +4,10 @@
   const allPages = (total) => Array.from({ length: total }, (_, index) => index + 1);
   const normalizeExpression = (value) => String(value ?? '')
     .trim()
+    .replace(/[０-９]/g, (digit) => String(digit.charCodeAt(0) - 0xFF10))
     .replace(/[，、]/g, ',')
-    .replace(/[–—~～至]/g, '-')
+    .replace(/[–—−－~～至]/g, '-')
+    .replace(/\s*-\s*/g, '-')
     .replace(/\s+/g, ',')
     .replace(/,+/g, ',')
     .replace(/^,|,$/g, '');

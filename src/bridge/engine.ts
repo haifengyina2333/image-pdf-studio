@@ -508,7 +508,7 @@ interface ToolboxGlobal {
     ) => Promise<{ blob: Blob; pageCount: number; inputBytes: number; outputBytes: number }>;
     pdfToImages: (
       session: PdfSessionLike,
-      pageNumbers: number[],
+      pageNumbers: Array<number | { sourcePage: number; rotation: number; outputPage: number }>,
       options: { type: string; quality: number; dpi: number },
       hooks?: { signal?: AbortSignal; onProgress?: (info: { stage?: string; current?: number; total?: number; pageNumber?: number }) => void }
     ) => Promise<{ images: { blob: Blob; outputPage?: number }[]; dpi: number; type: string }>;

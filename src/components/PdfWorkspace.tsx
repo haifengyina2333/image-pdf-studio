@@ -172,6 +172,10 @@ export function PdfWorkspace() {
         rotation: 0
       }))
     : [];
+  const previewPage = activePlan[currentPage - 1];
+  const previewSourcePage = previewPage?.sourcePage;
+  const previewRotation = previewPage?.rotation ?? 0;
+  const previewPageCount = activePlan.length;
 
   useEffect(() => {
     setComparingOriginal(false);
@@ -210,18 +214,19 @@ export function PdfWorkspace() {
   // Render active PDF page preview with strict original aspect ratio
   useEffect(() => {
     const canvas = canvasRef.current;
-    if (tool === 'image-to-pdf' || tool === 'id-card' || tool === 'organize' || !activeSession || !canvas) return;
+    if (tool === 'image-to-pdf' || tool === 'id-card' || tool === 'organize' || !activeSession || !canvas || !previewSourcePage) return;
     const controller = new AbortController();
     activeSession
-      .renderPage(currentPage, canvas, { maxWidth: 1100, maxHeight: 1400, signal: controller.signal })
+      .renderPage(previewSourcePage, canvas, { maxWidth: 1100, maxHeight: 1400, signal: controller.signal, extraRotation: previewRotation })
       .then(() => {
+        if (controller.signal.aborted) return;
         canvas.style.width = '';
         canvas.style.height = '';
         setPageRenderSeq((n) => n + 1);
       })
       .catch(() => {});
     return () => controller.abort();
-  }, [tool, activeSession, currentPage]);
+  }, [tool, activeSession, previewSourcePage, previewRotation]);
 
   // Synchronized live PDF watermark overlay preview
   useEffect(() => {
@@ -236,7 +241,7 @@ export function PdfWorkspace() {
 
     let inRange = true;
     try {
-      const selectedPages = getEngine().PageRange.parsePageSelection(watermark.pages, activeSession.numPages);
+      const selectedPages = getEngine().PageRange.parsePageSelection(watermark.pages, previewPageCount);
       inRange = selectedPages.includes(currentPage);
     } catch {
       inRange = false;
@@ -300,7 +305,7 @@ export function PdfWorkspace() {
       const [ax, ay] = PDF_WM_ANCHORS[watermark.position] || [0.5, 0.5];
       drawAt(ax * w, ay * h);
     }
-  }, [tool, activeSession, currentPage, watermark, comparingOriginal, pageRenderSeq]);
+  }, [tool, activeSession, currentPage, previewPageCount, watermark, comparingOriginal, pageRenderSeq]);
 
   // Image-to-PDF and the ID card sheet share one image rail; only the data and the wording differ.
   const imageRail =
@@ -735,11 +740,11 @@ export function PdfWorkspace() {
                   <ChevronLeft className="h-4 w-4" />
                 </button>
                 <span className="font-mono text-[13px] font-semibold tabular-nums" style={{ color: 'var(--ink)' }}>
-                  {currentPage} / {activeSession.numPages}
+                  {currentPage} / {previewPageCount}
                 </span>
                 <button
                   type="button"
-                  disabled={currentPage >= activeSession.numPages}
+                  disabled={currentPage >= previewPageCount}
                   onClick={() => setPage(currentPage + 1)}
                   className="grid h-6 w-6 place-items-center rounded-full disabled:opacity-30"
                   style={{ color: 'var(--ink-2)' }}
@@ -925,7 +930,7 @@ export function PdfWorkspace() {
         <div className="space-y-2.5">
           <p className="rounded-xl border p-3 text-[13px] leading-relaxed" style={{ background: 'var(--bg-subtle)', borderColor: 'var(--line)', color: 'var(--muted)' }}>
             已导入 <strong style={{ color: 'var(--ink)' }}>{sessions.length}</strong> 份 PDF（共{' '}
-            {sessions.reduce((s, d) => s + d.numPages, 0)} 页）。用左侧列表的 ↑ / ↓ 调整合并顺序，合并时完整保留原页面尺寸与矢量文字。
+            {sessions.reduce((s, d) => s + (pagePlans[d.id]?.length ?? d.numPages), 0)} 页）。用左侧列表的 ↑ / ↓ 调整合并顺序，合并时完整保留原页面尺寸与矢量文字。
           </p>
         </div>
       )}
@@ -955,7 +960,7 @@ export function PdfWorkspace() {
           </div>
           {split.mode === 'ranges' && (
             <label className="block text-[13px] font-semibold" style={{ color: 'var(--ink-2)' }}>
-              拆分范围（分号或换行分隔多份）
+              拆分范围（按整理后页码，分号或换行分隔多份）
               <textarea
                 rows={3}
                 placeholder="例如：1-3；4-6；8,10"
@@ -1045,7 +1050,7 @@ export function PdfWorkspace() {
           </div>
 
           <label className="block text-[13px] font-semibold" style={{ color: 'var(--ink-2)' }}>
-            页面范围（留空表示全部）
+            页面范围（按整理后页码，留空表示全部）
             <input
               type="text"
               placeholder="例如：1-5, 8"
@@ -1196,7 +1201,7 @@ export function PdfWorkspace() {
       {tool === 'pdf-to-image' && (
         <div className="space-y-2.5">
           <label className="block text-[13px] font-semibold" style={{ color: 'var(--ink-2)' }}>
-            页码范围（留空表示全部）
+            页码范围（按整理后页码，留空表示全部）
             <input
               type="text"
               placeholder="例如：1-3, 5"

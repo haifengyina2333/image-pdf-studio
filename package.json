@@ -5,6 +5,7 @@
   "type": "module",
   "description": "Local-first Image & PDF Studio Workbench (React 19 + TypeScript + Zustand + Tailwind v4)",
   "scripts": {
+    "test": "node --test tests/*.test.mjs",
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
     "build:web": "node scripts/build-release.mjs web",

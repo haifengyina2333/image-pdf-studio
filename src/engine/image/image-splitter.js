@@ -73,12 +73,21 @@
     return { rects, rows: yRanges.length, columns: Math.max(...rowCounts), rowCounts, rowPattern: rowCounts.join('+'), automatic: !requestedPattern.length && !forcedRows && !forcedColumns, separatorBands: { x: xBands, y: yBands } };
   };
   const canvasBlob = (canvas, type = 'image/png') => new Promise((resolve, reject) => canvas.toBlob((blob) => blob ? resolve(blob) : reject(new Error('无法生成拆分图片。')), type));
+  // Map both edges, not start + rounded size: adjacent analysis cells must share one rounded source boundary.
+  const mapCropToSource = (rect, analysisWidth, analysisHeight, sourceWidth, sourceHeight) => {
+    const x = (edge) => Math.max(0, Math.min(sourceWidth, Math.round(edge * sourceWidth / analysisWidth)));
+    const y = (edge) => Math.max(0, Math.min(sourceHeight, Math.round(edge * sourceHeight / analysisHeight)));
+    const sx = x(rect.x), sy = y(rect.y);
+    return { sx, sy, sw: x(rect.x + rect.width) - sx, sh: y(rect.y + rect.height) - sy };
+  };
   const splitFile = async ({ file, rows = 0, columns = 0, rowPattern = '', scope, signal, maxAnalysisEdge = 1800, onProgress }) => {
     ns.ImageDecoder.assertNotAborted(signal); const workingFile = await ns.ImageDecoder.normalizeFile(file, signal); const source = scope.trackBitmap(await createImageBitmap(workingFile)); ns.ImageDecoder.assertNotAborted(signal);
     const scale = Math.min(1, maxAnalysisEdge / Math.max(source.width, source.height)); const analysisCanvas = scope.trackCanvas(document.createElement('canvas')); analysisCanvas.width = Math.max(1, Math.round(source.width * scale)); analysisCanvas.height = Math.max(1, Math.round(source.height * scale)); const analysisContext = analysisCanvas.getContext('2d', { alpha: true, willReadFrequently: true }); analysisContext.drawImage(source, 0, 0, analysisCanvas.width, analysisCanvas.height);
     const layout = analyze(analysisContext.getImageData(0, 0, analysisCanvas.width, analysisCanvas.height), { rows, columns, rowPattern }); const files = []; const base = (file.name || '拼图').replace(/\.[^.]+$/, '');
     for (let index = 0; index < layout.rects.length; index += 1) {
-      ns.ImageDecoder.assertNotAborted(signal); const rect = layout.rects[index]; const sx = Math.max(0, Math.round(rect.x / scale)), sy = Math.max(0, Math.round(rect.y / scale)), sw = Math.max(1, Math.min(source.width - sx, Math.round(rect.width / scale))), sh = Math.max(1, Math.min(source.height - sy, Math.round(rect.height / scale)));
+      ns.ImageDecoder.assertNotAborted(signal);
+      const { sx, sy, sw, sh } = mapCropToSource(layout.rects[index], analysisCanvas.width, analysisCanvas.height, source.width, source.height);
+      if (sw < 1 || sh < 1) throw new Error('切片尺寸不足 1 像素，请减少行数或列数。');
       if (sw * sh > 64_000_000) throw new Error('单个切片像素过高，请先降低原拼图分辨率。');
       const output = document.createElement('canvas'); output.width = sw; output.height = sh;
       let blob;

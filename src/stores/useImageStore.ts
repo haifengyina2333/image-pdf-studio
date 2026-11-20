@@ -842,7 +842,13 @@ export const useImageStore = create<ImageStoreState>((set, get) => ({
       }
       return { compress: nextCompress };
     }),
-  patchResize: (patch) => set((s) => ({ resize: { ...s.resize, ...patch } })),
+  patchResize: (patch) => set((s) => ({
+    resize: {
+      ...s.resize,
+      ...(patch.mode === 'percent' && s.resize.mode !== 'percent' ? { value: 100 } : {}),
+      ...patch
+    }
+  })),
   patchTransform: (patch) => set((s) => ({ transform: { ...s.transform, ...patch } })),
   patchCrop: (patch) => set((s) => ({ crop: { ...s.crop, ...patch } })),
   patchStitch: (patch) => set((s) => ({ stitch: { ...s.stitch, ...patch } })),

@@ -91,7 +91,7 @@ export function HomeView() {
             className="studio-secondary-btn inline-flex h-9 items-center gap-2 rounded-full border px-5 text-[13px] font-semibold hover:-translate-y-0.5 active:scale-95"
           >
             <FileArchive className="h-4 w-4" />
-            <span>打开 PDF 工作台（7 工具）</span>
+            <span>打开 PDF 工作台（8 工具）</span>
           </button>
         </div>
 

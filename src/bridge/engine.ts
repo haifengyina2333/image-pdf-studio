@@ -27,6 +27,7 @@ import '../engine/image/face-redactor.js';
 import '../engine/pdf/page-range.js';
 import '../engine/pdf/pdf-runtime.js';
 import '../engine/pdf/pdf-processor.js';
+import '../engine/pdf/id-card-sheet.js';
 
 export interface DecodedImage {
   file: File;
@@ -200,6 +201,27 @@ export interface PdfSessionLike {
     options?: Record<string, unknown>
   ) => Promise<{ width: number; height: number; cssWidth: number; cssHeight: number }>;
   dispose: () => Promise<void>;
+}
+
+export interface IdCardSheetOptions {
+  sizeMode: 'card' | 'custom' | 'fit';
+  customWidthMm: number;
+  gapMm: number;
+  watermark: {
+    enabled: boolean;
+    text: string;
+    color: string;
+    scope: 'cards' | 'page';
+    opacity: number;
+    rotation: number;
+    fontPt: number;
+  };
+}
+
+export interface IdCardSheetLayout {
+  page: { width: number; height: number };
+  cards: { x: number; y: number; width: number; height: number }[];
+  shrunk: boolean;
 }
 
 export interface ResourceScopeLike {
@@ -484,6 +506,23 @@ interface ToolboxGlobal {
       options: { type: string; quality: number; dpi: number },
       hooks?: { signal?: AbortSignal; onProgress?: (info: { stage?: string; current?: number; total?: number; pageNumber?: number }) => void }
     ) => Promise<{ images: { blob: Blob; outputPage?: number }[]; dpi: number; type: string }>;
+  };
+  IdCardSheet: {
+    PAGE_MM: { width: number; height: number };
+    CARD_MM: { width: number; height: number };
+    MAX_SIDES: number;
+    layoutFor: (images: { width: number; height: number }[], options: IdCardSheetOptions) => IdCardSheetLayout;
+    drawSheet: (
+      ctx: CanvasRenderingContext2D,
+      pixelsPerMm: number,
+      sources: CanvasImageSource[],
+      layout: IdCardSheetLayout
+    ) => void;
+    createPDF: (
+      files: File[],
+      options: IdCardSheetOptions,
+      hooks?: { signal?: AbortSignal; onProgress?: (info: { stage?: string; current?: number; total?: number; fileName?: string }) => void }
+    ) => Promise<{ blob: Blob; pageCount: number; sideCount: number; inputBytes: number; outputBytes: number }>;
   };
   EmbeddedAssets?: {
     has: (name: string) => boolean;

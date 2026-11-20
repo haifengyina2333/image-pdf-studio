@@ -18,7 +18,8 @@ export interface BackgroundTask {
     | 'pdf-organize'
     | 'pdf-watermark'
     | 'pdf-image-to-pdf'
-    | 'pdf-to-image';
+    | 'pdf-to-image'
+    | 'pdf-id-card';
   title: string;
   status: TaskStatus;
   stage: string;

@@ -30,6 +30,19 @@ export function App() {
       if (!depth) setDragging(false);
     };
     const onDragOver = (e: DragEvent) => e.preventDefault();
+    // PDF tools that are fed by images take dropped / pasted images themselves; otherwise they go to the image workspace
+    const routeImages = (images: File[]) => {
+      const pdf = usePdfStore.getState();
+      const onPdfRoute = useAppStore.getState().route === 'pdf';
+      if (onPdfRoute && pdf.tool === 'image-to-pdf') {
+        pdf.importPdfImages(images);
+      } else if (onPdfRoute && pdf.tool === 'id-card') {
+        pdf.importIdImages(images);
+      } else {
+        setRoute('image');
+        useImageStore.getState().importFiles(images);
+      }
+    };
     const onDrop = (e: DragEvent) => {
       depth = 0;
       setDragging(false);
@@ -44,15 +57,10 @@ export function App() {
       }
       if (pdfs.length) {
         setRoute('pdf');
-        if (usePdfStore.getState().tool === 'image-to-pdf') usePdfStore.getState().setTool('compress');
+        if (['image-to-pdf', 'id-card'].includes(usePdfStore.getState().tool)) usePdfStore.getState().setTool('compress');
         usePdfStore.getState().importFiles(pdfs);
       } else if (images.length) {
-        if (useAppStore.getState().route === 'pdf' && usePdfStore.getState().tool === 'image-to-pdf') {
-          usePdfStore.getState().importPdfImages(images);
-        } else {
-          setRoute('image');
-          useImageStore.getState().importFiles(images);
-        }
+        routeImages(images);
       }
     };
     const onPaste = (e: ClipboardEvent) => {
@@ -65,12 +73,7 @@ export function App() {
         .filter((f): f is File => Boolean(f));
       if (!imgs.length) return;
       e.preventDefault();
-      if (useAppStore.getState().route === 'pdf' && usePdfStore.getState().tool === 'image-to-pdf') {
-        usePdfStore.getState().importPdfImages(imgs);
-      } else {
-        setRoute('image');
-        useImageStore.getState().importFiles(imgs);
-      }
+      routeImages(imgs);
     };
 
     const onKeyDown = (e: KeyboardEvent) => {

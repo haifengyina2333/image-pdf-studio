@@ -1,9 +1,26 @@
 import { create } from 'zustand';
-import { DecodedImage, decodeImageFile, ensurePdfJs, ensurePdfLib, formatBytes, getEngine, PdfSessionLike } from '../bridge/engine';
+import {
+  DecodedImage,
+  decodeImageFile,
+  ensurePdfJs,
+  ensurePdfLib,
+  formatBytes,
+  getEngine,
+  IdCardSheetOptions,
+  PdfSessionLike
+} from '../bridge/engine';
 import { useAppStore } from './useAppStore';
 import { useTaskStore } from './useTaskStore';
 
-export type PdfToolId = 'compress' | 'organize' | 'merge' | 'split' | 'watermark' | 'image-to-pdf' | 'pdf-to-image';
+export type PdfToolId =
+  | 'compress'
+  | 'organize'
+  | 'merge'
+  | 'split'
+  | 'watermark'
+  | 'image-to-pdf'
+  | 'pdf-to-image'
+  | 'id-card';
 
 export interface PdfOrganizePageItem {
   uid: string;
@@ -54,6 +71,19 @@ export interface PdfToImageConfig {
   filename: string;
 }
 
+export interface PdfIdCardConfig {
+  sizeMode: 'card' | 'custom' | 'fit';
+  customWidthMm: number;
+  gapMm: number;
+  watermark: boolean;
+  text: string;
+  color: string;
+  scope: 'cards' | 'page';
+  opacity: number;
+  rotation: number;
+  fontPt: number;
+}
+
 export interface PdfImageQueueItem {
   id: string;
   name: string;
@@ -82,6 +112,35 @@ export const DEFAULT_PDF_WATERMARK: PdfWatermarkConfig = {
   filename: ''
 };
 
+export const DEFAULT_PDF_ID_CARD: PdfIdCardConfig = {
+  sizeMode: 'card',
+  customWidthMm: 120,
+  gapMm: 20,
+  watermark: true,
+  text: '仅供办理＿＿使用，他用无效',
+  color: '#315f72',
+  scope: 'cards',
+  opacity: 35,
+  rotation: -25,
+  fontPt: 11
+};
+
+// The one place where the percent-based UI config becomes engine options, shared by the live preview and the export.
+export const idCardSheetOptions = (config: PdfIdCardConfig): IdCardSheetOptions => ({
+  sizeMode: config.sizeMode,
+  customWidthMm: config.customWidthMm,
+  gapMm: config.gapMm,
+  watermark: {
+    enabled: config.watermark,
+    text: config.text,
+    color: config.color,
+    scope: config.scope,
+    opacity: config.opacity / 100,
+    rotation: config.rotation,
+    fontPt: config.fontPt
+  }
+});
+
 interface PdfState {
   tool: PdfToolId;
   sessions: PdfSessionLike[];
@@ -98,10 +157,14 @@ interface PdfState {
   imageToPdf: PdfImageToPdfConfig;
   pdfToImage: PdfToImageConfig;
   pdfImages: PdfImageQueueItem[];
+  idCard: PdfIdCardConfig;
+  idCardFilename: string;
+  idImages: PdfImageQueueItem[];
 
   setTool: (tool: PdfToolId) => void;
   importFiles: (files: FileList | File[]) => Promise<void>;
   importPdfImages: (files: FileList | File[]) => Promise<void>;
+  importIdImages: (files: FileList | File[]) => Promise<void>;
   selectSession: (id: string) => void;
   moveSession: (id: string, delta: -1 | 1) => void;
   setPage: (page: number) => void;
@@ -110,6 +173,9 @@ interface PdfState {
   movePdfImage: (id: string, delta: -1 | 1) => void;
   removePdfImage: (id: string) => void;
   clearPdfImages: () => void;
+  moveIdImage: (id: string, delta: -1 | 1) => void;
+  removeIdImage: (id: string) => void;
+  clearIdImages: () => void;
 
   setOrganizeFilename: (name: string) => void;
   reorderOrganizePage: (fromUid: string, toUid: string) => void;
@@ -124,6 +190,8 @@ interface PdfState {
   patchWatermark: (patch: Partial<PdfWatermarkConfig>) => void;
   patchImageToPdf: (patch: Partial<PdfImageToPdfConfig>) => void;
   patchPdfToImage: (patch: Partial<PdfToImageConfig>) => void;
+  patchIdCard: (patch: Partial<PdfIdCardConfig>) => void;
+  setIdCardFilename: (name: string) => void;
   resetCurrentTool: () => void;
 
   runCompress: () => Promise<void>;
@@ -133,6 +201,7 @@ interface PdfState {
   runWatermark: () => Promise<void>;
   runImagesToPdf: () => Promise<void>;
   runPdfToImages: () => Promise<void>;
+  runIdCardSheet: () => Promise<void>;
 }
 
 let runtimeManager: InstanceType<ReturnType<typeof getEngine>['PDFRuntime']['PDFRuntimeManager']> | null = null;
@@ -201,6 +270,9 @@ export const usePdfStore = create<PdfState>((set, get) => ({
   imageToPdf: { pageSize: 'a4', orientation: 'auto', marginMm: 10, background: '#ffffff', quality: 0.9, filename: '' },
   pdfToImage: { pages: '', format: 'image/jpeg', dpi: 144, quality: 0.9, filename: '' },
   pdfImages: [],
+  idCard: { ...DEFAULT_PDF_ID_CARD },
+  idCardFilename: '',
+  idImages: [],
 
   setTool: (tool) => set({ tool }),
 
@@ -256,6 +328,41 @@ export const usePdfStore = create<PdfState>((set, get) => ({
     }
     set({ importing: false });
     if (added > 0) notify(`已添加 ${added} 张图片`, 'success');
+  },
+
+  importIdImages: async (fileList) => {
+    const files = Array.from(fileList);
+    if (!files.length) return;
+    const notify = useAppStore.getState().notify;
+    const maxSides = getEngine().IdCardSheet.MAX_SIDES;
+    const room = maxSides - get().idImages.length;
+    if (room <= 0) {
+      notify('已有正反两面，请先移除一张再添加', 'error');
+      return;
+    }
+    set({ importing: true });
+    let added = 0;
+    for (const file of files.slice(0, room)) {
+      try {
+        const decoded = await decodeImageFile(file);
+        const id = `idimg_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+        // Re-check inside the update: a second drop can land while a slow HEIC is still decoding
+        let accepted = false;
+        set((state) => {
+          if (state.idImages.length >= maxSides) return state;
+          accepted = true;
+          return { idImages: [...state.idImages, { id, name: file.name, size: file.size, file: decoded.file, decoded }] };
+        });
+        if (accepted) added += 1;
+        else decoded.dispose?.();
+      } catch (err) {
+        notify(err instanceof Error ? err.message : `${file.name} 导入失败`, 'error');
+      }
+    }
+    set({ importing: false });
+    if (added > 0) {
+      notify(files.length > room ? `已添加 ${added} 张，证件合成最多使用正反两张` : `已添加 ${added} 张证件照片`, 'success');
+    }
   },
 
   selectSession: (id) => set({ activeId: id, currentPage: 1 }),
@@ -393,15 +500,39 @@ export const usePdfStore = create<PdfState>((set, get) => ({
     set({ pdfImages: [] });
   },
 
+  moveIdImage: (id, delta) => {
+    const { idImages } = get();
+    const idx = idImages.findIndex((i) => i.id === id);
+    const target = idx + delta;
+    if (idx < 0 || target < 0 || target >= idImages.length) return;
+    const next = [...idImages];
+    const [moved] = next.splice(idx, 1);
+    next.splice(target, 0, moved);
+    set({ idImages: next });
+  },
+
+  removeIdImage: (id) => {
+    const target = get().idImages.find((i) => i.id === id);
+    target?.decoded.dispose?.();
+    set((s) => ({ idImages: s.idImages.filter((i) => i.id !== id) }));
+  },
+
+  clearIdImages: () => {
+    get().idImages.forEach((i) => i.decoded.dispose?.());
+    set({ idImages: [] });
+  },
+
   patchCompress: (patch) => set((s) => ({ compress: { ...s.compress, ...patch } })),
   setMergeFilename: (mergeFilename) => set({ mergeFilename }),
   patchSplit: (patch) => set((s) => ({ split: { ...s.split, ...patch } })),
   patchWatermark: (patch) => set((s) => ({ watermark: { ...s.watermark, ...patch } })),
   patchImageToPdf: (patch) => set((s) => ({ imageToPdf: { ...s.imageToPdf, ...patch } })),
   patchPdfToImage: (patch) => set((s) => ({ pdfToImage: { ...s.pdfToImage, ...patch } })),
+  patchIdCard: (patch) => set((s) => ({ idCard: { ...s.idCard, ...patch } })),
+  setIdCardFilename: (idCardFilename) => set({ idCardFilename }),
 
   resetCurrentTool: () => {
-    const { tool, watermark } = get();
+    const { tool, watermark, idCard } = get();
     if (tool === 'compress') set({ compress: { ...DEFAULT_PDF_COMPRESS } });
     else if (tool === 'organize') {
       get().restoreOrganizePages();
@@ -412,6 +543,7 @@ export const usePdfStore = create<PdfState>((set, get) => ({
       set({ imageToPdf: { pageSize: 'a4', orientation: 'auto', marginMm: 10, background: '#ffffff', quality: 0.9, filename: '' } });
     else if (tool === 'pdf-to-image')
       set({ pdfToImage: { pages: '', format: 'image/jpeg', dpi: 144, quality: 0.9, filename: '' } });
+    else if (tool === 'id-card') set({ idCard: { ...DEFAULT_PDF_ID_CARD, text: idCard.text } });
     useAppStore.getState().notify('已重置当前 PDF 工具参数');
   },
 
@@ -680,6 +812,42 @@ export const usePdfStore = create<PdfState>((set, get) => ({
           summary: `${files.length} 页 · ${res.dpi} DPI · ZIP ${formatBytes(zipBlob.size)}`,
           downloadBlob: zipBlob,
           downloadName: `${prefix}.zip`
+        };
+      }
+    );
+  },
+
+  runIdCardSheet: async () => {
+    const { idImages, idCard, idCardFilename } = get();
+    if (!idImages.length) return;
+    const engine = getEngine();
+    const filename = `${cleanStem(idCardFilename, '证件复印件')}.pdf`;
+
+    await useTaskStore.getState().runTask(
+      { kind: 'pdf-id-card', title: `证件合成 A4（${idImages.length} 张）`, initialStage: '正在加载 PDF 引擎…' },
+      async ({ signal, report }) => {
+        await ensurePdfLib();
+        const res = await engine.IdCardSheet.createPDF(
+          idImages.map((i) => i.file),
+          idCardSheetOptions(idCard),
+          {
+            signal,
+            onProgress: ({ stage, current = 1, total = idImages.length, fileName }) =>
+              report(
+                stage === 'save'
+                  ? '正在生成 PDF…'
+                  : stage === 'render'
+                    ? '正在排版 A4 页面…'
+                    : `正在读取 ${current}/${total}：${fileName || ''}`,
+                { current, total }
+              )
+          }
+        );
+        useAppStore.getState().notify(`已生成 PDF：${filename}`, 'success');
+        return {
+          summary: `A4 · ${res.sideCount} 张证件照${idCard.watermark && idCard.text.trim() ? ' · 含水印' : ''} · ${formatBytes(res.outputBytes)}`,
+          downloadBlob: res.blob,
+          downloadName: filename
         };
       }
     );

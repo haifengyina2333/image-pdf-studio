@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { ChevronLeft, ChevronRight, Download, FilePlus2, GitCompare } from 'lucide-react';
 import { getEngine, PdfSessionLike, triggerBlobDownload } from '../bridge/engine';
-import { PdfOrganizePageItem, usePdfStore } from '../stores/usePdfStore';
+import { PdfOrganizePageItem, selectCompareResults, usePdfStore } from '../stores/usePdfStore';
 
 interface PdfCompareStageProps {
   sessionA: PdfSessionLike | null;
@@ -14,7 +14,7 @@ interface PdfCompareStageProps {
 export function PdfCompareStage({ sessionA, sessionB, planA, planB, onImportPdf }: PdfCompareStageProps) {
   const currentPage = usePdfStore((s) => s.currentPage);
   const compare = usePdfStore((s) => s.compare);
-  const compareResults = usePdfStore((s) => s.compareResults);
+  const compareResults = usePdfStore(selectCompareResults);
   const setPage = usePdfStore((s) => s.setPage);
 
   const canvasARef = useRef<HTMLCanvasElement>(null);

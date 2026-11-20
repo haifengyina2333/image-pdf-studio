@@ -324,7 +324,7 @@ const processSingleItem = async (
   state: ImageStoreState,
   overrideFormat?: string,
   signal?: AbortSignal
-): Promise<{ blob: Blob; width: number; height: number; ext: string; note?: string }> => {
+): Promise<{ blob: Blob; width: number; height: number; ext: string; note?: string; metTarget?: boolean }> => {
   const engine = getEngine();
   const scope = new engine.ResourceScope();
   const mime = overrideFormat || state.exportConfig.format;
@@ -402,7 +402,8 @@ const processSingleItem = async (
           width: res.width,
           height: res.height,
           ext: res.extension || extForMime(res.outputType || mime),
-          note: res.strategy
+          note: res.strategy,
+          metTarget: res.metTarget
         };
       }
       const profile = engine.CompressionModel.profiles[state.compress.profile];
@@ -1316,7 +1317,10 @@ export const useImageStore = create<ImageStoreState>((set, get) => ({
         const res = await processSingleItem(active, state, undefined, signal);
         const filename = `${stemOf(active.name)}.${res.ext}`;
         const delta = active.size ? Math.round((1 - res.blob.size / active.size) * 100) : 0;
-        useAppStore.getState().notify(`已导出：${filename}`, 'success');
+        useAppStore.getState().notify(
+          res.metTarget === false ? `已导出但未达到目标体积：${filename}（${formatBytes(res.blob.size)}）` : `已导出：${filename}`,
+          res.metTarget === false ? 'info' : 'success'
+        );
         return {
           summary: res.note
             ? `${res.note} · ${formatBytes(active.size)} → ${formatBytes(res.blob.size)}`
@@ -1343,6 +1347,7 @@ export const useImageStore = create<ImageStoreState>((set, get) => ({
       async ({ signal, report }) => {
         const outputs: { name: string; blob: Blob }[] = [];
         const failed: string[] = [];
+        const overTarget: string[] = [];
         const usedNames = new Set<string>();
         const uniqueName = (base: string, ext: string) => {
           let candidate = `${base}.${ext}`;
@@ -1360,6 +1365,7 @@ export const useImageStore = create<ImageStoreState>((set, get) => ({
             const res = await processSingleItem(item, state, undefined, signal);
             const name = uniqueName(stemOf(item.name), res.ext);
             outputs.push({ name, blob: res.blob });
+            if (res.metTarget === false) overTarget.push(`${name}（${formatBytes(res.blob.size)}）`);
             if (!asZip) triggerBlobDownload(res.blob, name);
           } catch (err) {
             if (signal.aborted || (err instanceof DOMException && err.name === 'AbortError')) throw err;
@@ -1372,21 +1378,23 @@ export const useImageStore = create<ImageStoreState>((set, get) => ({
         }
 
         const failSuffix = failed.length ? `（跳过 ${failed.length} 张失败：${failed.slice(0, 2).join('、')}${failed.length > 2 ? '…' : ''}）` : '';
+        const overTargetSuffix = overTarget.length ? `；${overTarget.length} 张未达目标体积：${overTarget.join('、')}` : '';
+        const tone = failed.length || overTarget.length ? 'info' : 'success';
 
         if (asZip) {
           report('正在打包 ZIP…');
           const zipBlob = await engine.ZipArchive.createZip(outputs, { signal });
           const zipName = cleanName(state.exportConfig.filename, makeStamp('批量图片'), 'zip');
-          useAppStore.getState().notify(`已打包 ${outputs.length} 张图片：${zipName}${failSuffix}`, failed.length ? 'info' : 'success');
+          useAppStore.getState().notify(`已打包 ${outputs.length} 张图片：${zipName}${failSuffix}${overTargetSuffix}`, tone);
           return {
-            summary: `${outputs.length} 张成功 · ZIP ${formatBytes(zipBlob.size)}${failSuffix}`,
+            summary: `已打包 ${outputs.length} 张 · ZIP ${formatBytes(zipBlob.size)}${failSuffix}${overTargetSuffix}`,
             downloadBlob: zipBlob,
             downloadName: zipName
           };
         }
 
-        useAppStore.getState().notify(`已分别导出 ${outputs.length} 张图片${failSuffix}`, failed.length ? 'info' : 'success');
-        return { summary: `已分别下载 ${outputs.length} 张图片${failSuffix}` };
+        useAppStore.getState().notify(`已分别导出 ${outputs.length} 张图片${failSuffix}${overTargetSuffix}`, tone);
+        return { summary: `已分别下载 ${outputs.length} 张图片${failSuffix}${overTargetSuffix}` };
       }
     );
   },

@@ -38,7 +38,8 @@ export interface PdfSignatureAsset {
 export interface PdfSignaturePlacement {
   id: string;
   stampId: string;
-  page: number;
+  sessionId: string;
+  sourcePage: number;
   applyAll: boolean;
   xRatio: number;
   yRatio: number;
@@ -238,7 +239,7 @@ interface PdfState {
   signFilename: string;
   pageNumbers: PdfPageNumberConfig;
   compare: PdfCompareConfig;
-  compareResults: PdfComparePageResult[];
+  compareScan: (CompareScope & { pages: PdfComparePageResult[] }) | null;
   imageToPdf: PdfImageToPdfConfig;
   pdfToImage: PdfToImageConfig;
   pdfImages: PdfImageQueueItem[];
@@ -383,7 +384,7 @@ export const usePdfStore = create<PdfState>((set, get) => ({
   signFilename: '',
   pageNumbers: { ...DEFAULT_PDF_PAGE_NUMBERS },
   compare: { ...DEFAULT_PDF_COMPARE },
-  compareResults: [],
+  compareScan: null,
   imageToPdf: { pageSize: 'a4', orientation: 'auto', marginMm: 10, background: '#ffffff', quality: 0.9, filename: '' },
   pdfToImage: { outputMode: 'pages', pages: '', format: 'image/jpeg', dpi: 144, quality: 0.9, gap: 12, divider: true, filename: '' },
   pdfImages: [],
@@ -392,7 +393,11 @@ export const usePdfStore = create<PdfState>((set, get) => ({
   idImages: [],
   idImagesImporting: false,
 
-  setTool: (tool) => set({ tool }),
+  setTool: (tool) => {
+    const { tool: previous, currentPage } = get();
+    set({ tool });
+    if (previous === 'compare' && tool !== 'compare') get().setPage(currentPage);
+  },
 
   importFiles: async (fileList) => {
     const files = Array.from(fileList);
@@ -496,7 +501,7 @@ export const usePdfStore = create<PdfState>((set, get) => ({
     }
   },
 
-  selectSession: (id) => set({ activeId: id, currentPage: 1 }),
+  selectSession: (id) => set({ activeId: id, currentPage: 1, selectedPlacementId: null }),
 
   moveSession: (id, delta) => {
     const { sessions } = get();
@@ -510,10 +515,12 @@ export const usePdfStore = create<PdfState>((set, get) => ({
   },
 
   setPage: (page) => {
-    const { sessions, activeId, pagePlans } = get();
+    const { sessions, activeId, pagePlans, tool, compare } = get();
     const active = sessions.find((s) => s.id === activeId);
     if (!active) return;
-    set({ currentPage: Math.max(1, Math.min(pagePlans[active.id]?.length ?? active.numPages, page)) });
+    const target = tool === 'compare' ? getCompareTargetSession(sessions, activeId, compare.targetSessionId) : undefined;
+    const total = Math.max(pagePlans[active.id]?.length ?? active.numPages, target ? pagePlans[target.id]?.length ?? target.numPages : 0);
+    set({ currentPage: Math.max(1, Math.min(total, page)) });
   },
 
   removeSession: async (id) => {
@@ -530,6 +537,9 @@ export const usePdfStore = create<PdfState>((set, get) => ({
       return {
         sessions: next,
         pagePlans: nextPlans,
+        signaturePlacements: state.signaturePlacements.filter((p) => p.sessionId !== id),
+        selectedPlacementId: state.signaturePlacements.some((p) => p.id === state.selectedPlacementId && p.sessionId === id)
+          ? null : state.selectedPlacementId,
         activeId: state.activeId === id ? next[0]?.id ?? null : state.activeId,
         currentPage: state.activeId === id ? 1 : state.currentPage
       };
@@ -543,7 +553,7 @@ export const usePdfStore = create<PdfState>((set, get) => ({
       return;
     }
     for (const s of get().sessions) await runtimeManager?.remove(s.id);
-    set({ sessions: [], pagePlans: {}, activeId: null, currentPage: 1 });
+    set({ sessions: [], pagePlans: {}, activeId: null, currentPage: 1, signaturePlacements: [], selectedPlacementId: null, compareScan: null });
     useAppStore.getState().notify('已清空 PDF 列表');
   },
 
@@ -677,12 +687,18 @@ export const usePdfStore = create<PdfState>((set, get) => ({
     })),
   placeSignature: (stampId, page) => {
     const s = get();
+    const session = s.sessions.find((item) => item.id === s.activeId);
+    if (!session || !s.signatureAssets.some((a) => a.id === stampId)) return;
     const targetPage = page ?? s.currentPage;
+    const plan = s.pagePlans[session.id];
+    const sourcePage = plan ? plan[targetPage - 1]?.sourcePage : targetPage;
+    if (!sourcePage || sourcePage < 1 || sourcePage > session.numPages) return;
     const id = `place_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`;
     const placement: PdfSignaturePlacement = {
       id,
       stampId,
-      page: targetPage,
+      sessionId: session.id,
+      sourcePage,
       applyAll: false,
       xRatio: 0.72,
       yRatio: 0.82,
@@ -704,14 +720,18 @@ export const usePdfStore = create<PdfState>((set, get) => ({
       signaturePlacements: s.signaturePlacements.filter((p) => p.id !== id),
       selectedPlacementId: s.selectedPlacementId === id ? null : s.selectedPlacementId
     })),
-  clearSignaturePlacements: () => set({ signaturePlacements: [], selectedPlacementId: null }),
+  clearSignaturePlacements: () => set((s) => ({
+    signaturePlacements: s.signaturePlacements.filter((p) => p.sessionId !== s.activeId),
+    selectedPlacementId: null
+  })),
   selectSignaturePlacement: (id) => set({ selectedPlacementId: id }),
   setSignFilename: (signFilename) => set({ signFilename }),
   patchPageNumbers: (patch) => set((s) => ({ pageNumbers: { ...s.pageNumbers, ...patch } })),
   patchCompare: (patch) =>
     set((s) => ({
       compare: { ...s.compare, ...patch },
-      ...(patch.targetSessionId !== undefined || patch.threshold !== undefined ? { compareResults: [] } : {})
+      ...(patch.targetSessionId !== undefined && patch.targetSessionId !== s.compare.targetSessionId ? { currentPage: 1 } : {}),
+      ...(patch.targetSessionId !== undefined || patch.threshold !== undefined ? { compareScan: null } : {})
     })),
   patchImageToPdf: (patch) => set((s) => ({ imageToPdf: { ...s.imageToPdf, ...patch } })),
   patchPdfToImage: (patch) => set((s) => ({ pdfToImage: { ...s.pdfToImage, ...patch } })),
@@ -725,9 +745,12 @@ export const usePdfStore = create<PdfState>((set, get) => ({
       get().restoreOrganizePages();
       return;
     } else if (tool === 'watermark') set({ watermark: { ...DEFAULT_PDF_WATERMARK, text: watermark.text } });
-    else if (tool === 'sign') set({ signaturePlacements: [], selectedPlacementId: null, signFilename: '' });
+    else if (tool === 'sign') {
+      get().clearSignaturePlacements();
+      set({ signFilename: '' });
+    }
     else if (tool === 'page-numbers') set({ pageNumbers: { ...DEFAULT_PDF_PAGE_NUMBERS } });
-    else if (tool === 'compare') set({ compare: { ...DEFAULT_PDF_COMPARE }, compareResults: [] });
+    else if (tool === 'compare') set({ compare: { ...DEFAULT_PDF_COMPARE }, compareScan: null });
     else if (tool === 'split') set({ split: { mode: 'every', ranges: '', filename: '' } });
     else if (tool === 'image-to-pdf')
       set({ imageToPdf: { pageSize: 'a4', orientation: 'auto', marginMm: 10, background: '#ffffff', quality: 0.9, filename: '' } });
@@ -977,7 +1000,8 @@ export const usePdfStore = create<PdfState>((set, get) => ({
     const session = sessions.find((s) => s.id === activeId);
     if (!session) return;
     const notify = useAppStore.getState().notify;
-    if (!signaturePlacements.length) {
+    const placements = getSignaturePlacementsForSession(signaturePlacements, session.id, pagePlans[session.id]);
+    if (!placements.length) {
       notify('请先在页面上放置至少一个签名或印章', 'error');
       return;
     }
@@ -987,7 +1011,7 @@ export const usePdfStore = create<PdfState>((set, get) => ({
     const allPages = Array.from({ length: effectiveTotal }, (_, idx) => idx + 1);
     const filename = `${cleanStem(signFilename, `${session.file.name.replace(/\.pdf$/i, '')}-已签章`)}.pdf`;
 
-    const payload = signaturePlacements
+    const payload = placements
       .map((pl) => {
         const asset = signatureAssets.find((a) => a.id === pl.stampId);
         if (!asset) return null;
@@ -1083,9 +1107,10 @@ export const usePdfStore = create<PdfState>((set, get) => ({
   },
 
   runCompareScan: async () => {
-    const { sessions, activeId, compare, pagePlans } = get();
+    const state = get();
+    const { sessions, activeId, compare, pagePlans } = state;
     const sessionA = sessions.find((s) => s.id === activeId);
-    const sessionB = sessions.find((s) => s.id === compare.targetSessionId) ?? sessions.find((s) => s.id !== activeId);
+    const sessionB = getCompareTargetSession(sessions, activeId, compare.targetSessionId);
     const notify = useAppStore.getState().notify;
     if (!sessionA || !sessionB || sessionA.id === sessionB.id) {
       notify('请先导入至少两份 PDF 文档用于对比', 'error');
@@ -1094,6 +1119,7 @@ export const usePdfStore = create<PdfState>((set, get) => ({
     const engine = getEngine();
     const planA = snapshotPagePlan(sessionA, pagePlans[sessionA.id]) ?? null;
     const planB = snapshotPagePlan(sessionB, pagePlans[sessionB.id]) ?? null;
+    const scope = getCompareScope(state, sessionA, sessionB);
 
     await useTaskStore.getState().runTask(
       { kind: 'pdf-compare', title: `全本差异扫描：${sessionA.file.name} vs ${sessionB.file.name}`, initialStage: '正在逐页像素比对…' },
@@ -1105,11 +1131,12 @@ export const usePdfStore = create<PdfState>((set, get) => ({
           signal,
           onProgress: ({ current, total }) => report(`正在比对第 ${current}/${total} 页…`, { current, total })
         });
-        set({
-          compare: { ...get().compare, targetSessionId: sessionB.id },
-          compareResults: res.pages,
-          ...(res.diffPages.length ? { currentPage: res.diffPages[0] } : {})
-        });
+        if (!signal.aborted && matchesCompareScope(get(), scope)) {
+          set({
+            compareScan: { ...scope, pages: res.pages },
+            ...(get().tool === 'compare' && res.diffPages.length ? { currentPage: res.diffPages[0] } : {})
+          });
+        }
         const msg = res.diffPages.length
           ? `共扫描 ${res.totalPages} 页，发现 ${res.diffPages.length} 页存在差异（第 ${res.diffPages.slice(0, 6).join('、')}${res.diffPages.length > 6 ? '…' : ''} 页）`
           : `共扫描 ${res.totalPages} 页，两份文档视觉内容完全一致`;
@@ -1120,9 +1147,10 @@ export const usePdfStore = create<PdfState>((set, get) => ({
   },
 
   runExportCompareReport: async () => {
-    const { sessions, activeId, compare, compareResults, pagePlans } = get();
+    const state = get();
+    const { sessions, activeId, compare, pagePlans } = state;
     const sessionA = sessions.find((s) => s.id === activeId);
-    const sessionB = sessions.find((s) => s.id === compare.targetSessionId) ?? sessions.find((s) => s.id !== activeId);
+    const sessionB = getCompareTargetSession(sessions, activeId, compare.targetSessionId);
     const notify = useAppStore.getState().notify;
     if (!sessionA || !sessionB || sessionA.id === sessionB.id) {
       notify('请先导入两份 PDF 文档', 'error');
@@ -1132,9 +1160,13 @@ export const usePdfStore = create<PdfState>((set, get) => ({
     const planA = snapshotPagePlan(sessionA, pagePlans[sessionA.id]) ?? null;
     const planB = snapshotPagePlan(sessionB, pagePlans[sessionB.id]) ?? null;
     const total = Math.max(planA?.length ?? sessionA.numPages, planB?.length ?? sessionB.numPages);
+    const compareResults = selectCompareResults(state);
     const diffPages = compareResults.filter((r) => r.hasDiff).map((r) => r.page);
-    const targetPages =
-      compare.onlyDiffExport && diffPages.length ? diffPages : Array.from({ length: total }, (_, idx) => idx + 1);
+    if (compare.onlyDiffExport && !diffPages.length) {
+      notify(compareResults.length ? '本次扫描未发现差异，没有可导出的差异页。' : '请先扫描当前两份 PDF，再导出仅差异页的报告。', 'info');
+      return;
+    }
+    const targetPages = compare.onlyDiffExport ? diffPages : Array.from({ length: total }, (_, idx) => idx + 1);
     const filename = `${cleanStem(compare.filename, `${sessionA.file.name.replace(/\.pdf$/i, '')}-差异对比`)}.pdf`;
 
     await useTaskStore.getState().runTask(
@@ -1296,3 +1328,42 @@ export const usePdfStore = create<PdfState>((set, get) => ({
     );
   }
 }));
+export const getSignaturePlacementsForSession = (
+  placements: PdfSignaturePlacement[],
+  sessionId: string | null,
+  plan?: PdfOrganizePageItem[]
+) => placements.flatMap((placement) => {
+  if (placement.sessionId !== sessionId) return [];
+  const page = plan ? plan.findIndex((p) => p.sourcePage === placement.sourcePage) + 1 : placement.sourcePage;
+  return placement.applyAll || page > 0 ? [{ ...placement, page }] : [];
+});
+
+export const getCompareTargetSession = (sessions: PdfSessionLike[], activeId: string | null, targetId: string | null) =>
+  sessions.find((s) => s.id === targetId && s.id !== activeId) ?? sessions.find((s) => s.id !== activeId);
+
+type CompareScope = {
+  sourceId: string;
+  targetId: string;
+  planA?: PdfOrganizePageItem[];
+  planB?: PdfOrganizePageItem[];
+  threshold: number;
+};
+
+const getCompareScope = (state: PdfState, sessionA: PdfSessionLike, sessionB: PdfSessionLike): CompareScope => ({
+  sourceId: sessionA.id,
+  targetId: sessionB.id,
+  planA: state.pagePlans[sessionA.id],
+  planB: state.pagePlans[sessionB.id],
+  threshold: state.compare.threshold
+});
+
+const matchesCompareScope = (state: PdfState, scope: CompareScope) =>
+  state.activeId === scope.sourceId &&
+  getCompareTargetSession(state.sessions, state.activeId, state.compare.targetSessionId)?.id === scope.targetId &&
+  state.pagePlans[scope.sourceId] === scope.planA &&
+  state.pagePlans[scope.targetId] === scope.planB &&
+  state.compare.threshold === scope.threshold;
+
+const EMPTY_COMPARE_RESULTS: PdfComparePageResult[] = [];
+export const selectCompareResults = (state: PdfState) =>
+  state.compareScan && matchesCompareScope(state, state.compareScan) ? state.compareScan.pages : EMPTY_COMPARE_RESULTS;

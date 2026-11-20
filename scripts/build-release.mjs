@@ -4,10 +4,11 @@ import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
+const { version } = JSON.parse(readFileSync(resolve(ROOT, 'package.json'), 'utf8'));
 const RELEASE_DIR = resolve(ROOT, 'release');
-const SINGLE_OUT = resolve(RELEASE_DIR, '图片PDF工作台-v2.0.2-离线单文件.html');
+const SINGLE_OUT = resolve(RELEASE_DIR, `图片PDF工作台-v${version}-离线单文件.html`);
 const WEB_DIR = resolve(RELEASE_DIR, 'web');
-const WEB_ZIP = resolve(RELEASE_DIR, '图片PDF工作台-v2.0.2-Web部署包.zip');
+const WEB_ZIP = resolve(RELEASE_DIR, `图片PDF工作台-v${version}-Web部署包.zip`);
 
 const mode = process.argv[2] || 'all'; // 'all' | 'web' | 'single'
 

@@ -227,6 +227,19 @@ summary {
   border-color: var(--accent-border);
 }
 
+/* Empty queue slot waiting for a file (pair with border-dashed) */
+.studio-slot {
+  background: transparent;
+  border-color: var(--line-strong);
+  color: var(--muted);
+  transition: background-color 150ms ease, border-color 150ms ease, color 150ms ease;
+}
+.studio-slot:hover:not(:disabled) {
+  background: var(--accent-soft);
+  border-color: var(--accent-border);
+  color: var(--accent);
+}
+
 .studio-icon-btn {
   background: var(--bg-subtle);
   border-color: var(--line);

@@ -1,6 +1,6 @@
 {
   "name": "image-pdf-studio",
-  "version": "2.0.2",
+  "version": "2.1.0",
   "private": true,
   "type": "module",
   "description": "Local-first Image & PDF Studio Workbench (React 19 + TypeScript + Zustand + Tailwind v4)",

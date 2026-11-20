@@ -12,6 +12,7 @@ import {
   FilePlus2,
   FileStack,
   FileText,
+  IdCard,
   ImagePlus,
   Info,
   LayoutGrid,
@@ -23,9 +24,10 @@ import {
 } from 'lucide-react';
 import { formatBytes, getEngine } from '../bridge/engine';
 import { useAppStore } from '../stores/useAppStore';
-import { PdfToolId, usePdfStore } from '../stores/usePdfStore';
+import { idCardSheetOptions, PdfToolId, usePdfStore } from '../stores/usePdfStore';
 import { useTaskStore } from '../stores/useTaskStore';
 import { NumericInput } from './NumericInput';
+import { PdfIdCardSheet } from './PdfIdCardSheet';
 import { PdfOrganizeStage } from './PdfOrganizeStage';
 import { WorkbenchShell } from './WorkbenchShell';
 
@@ -36,7 +38,8 @@ const PDF_TOOLS: { id: PdfToolId; label: string; icon: typeof FileArchive }[] = 
   { id: 'split', label: '拆分提取', icon: Scissors },
   { id: 'watermark', label: 'PDF 水印', icon: Droplets },
   { id: 'image-to-pdf', label: '图片转 PDF', icon: ImagePlus },
-  { id: 'pdf-to-image', label: 'PDF 转图片', icon: FileImage }
+  { id: 'pdf-to-image', label: 'PDF 转图片', icon: FileImage },
+  { id: 'id-card', label: '证件合成 A4', icon: IdCard }
 ];
 
 const PROFILES = [
@@ -76,6 +79,19 @@ const PDF_WM_ANCHORS: Record<string, [number, number]> = {
   'bottom-right': [0.92, 0.82]
 };
 
+const ID_CARD_SIZES = [
+  { id: 'card', label: '标准证件（身份证 / 银行卡 / 驾驶证）' },
+  { id: 'custom', label: '自定义宽度' },
+  { id: 'fit', label: '自适应铺满（执照 / 户口本）' }
+] as const;
+const ID_CARD_SIDES = ['正面', '反面'];
+const ID_CARD_WM_CHIPS = [
+  { label: '办理专用', text: '仅供办理＿＿使用，他用无效' },
+  { label: '入职专用', text: '仅供＿＿入职使用，他用无效' },
+  { label: '租房专用', text: '仅供租房备案使用，他用无效' },
+  { label: '复印无效', text: '仅供核验 · 复印无效' }
+];
+
 export function PdfWorkspace() {
   const tool = usePdfStore((s) => s.tool);
   const sessions = usePdfStore((s) => s.sessions);
@@ -91,10 +107,16 @@ export function PdfWorkspace() {
   const imageToPdf = usePdfStore((s) => s.imageToPdf);
   const pdfToImage = usePdfStore((s) => s.pdfToImage);
   const pdfImages = usePdfStore((s) => s.pdfImages);
+  const idCard = usePdfStore((s) => s.idCard);
+  const idCardFilename = usePdfStore((s) => s.idCardFilename);
+  const idImages = usePdfStore((s) => s.idImages);
+  const idImagesImporting = usePdfStore((s) => s.idImagesImporting);
+  const idCardWatermarkMissing = idCard.watermark && !getEngine().IdCardSheet.hasWatermarkText(idCard.text);
 
   const setTool = usePdfStore((s) => s.setTool);
   const importFiles = usePdfStore((s) => s.importFiles);
   const importPdfImages = usePdfStore((s) => s.importPdfImages);
+  const importIdImages = usePdfStore((s) => s.importIdImages);
   const selectSession = usePdfStore((s) => s.selectSession);
   const moveSession = usePdfStore((s) => s.moveSession);
   const setPage = usePdfStore((s) => s.setPage);
@@ -103,6 +125,9 @@ export function PdfWorkspace() {
   const movePdfImage = usePdfStore((s) => s.movePdfImage);
   const removePdfImage = usePdfStore((s) => s.removePdfImage);
   const clearPdfImages = usePdfStore((s) => s.clearPdfImages);
+  const moveIdImage = usePdfStore((s) => s.moveIdImage);
+  const removeIdImage = usePdfStore((s) => s.removeIdImage);
+  const clearIdImages = usePdfStore((s) => s.clearIdImages);
   const setOrganizeFilename = usePdfStore((s) => s.setOrganizeFilename);
   const restoreOrganizePages = usePdfStore((s) => s.restoreOrganizePages);
   const patchCompress = usePdfStore((s) => s.patchCompress);
@@ -111,6 +136,8 @@ export function PdfWorkspace() {
   const patchWatermark = usePdfStore((s) => s.patchWatermark);
   const patchImageToPdf = usePdfStore((s) => s.patchImageToPdf);
   const patchPdfToImage = usePdfStore((s) => s.patchPdfToImage);
+  const patchIdCard = usePdfStore((s) => s.patchIdCard);
+  const setIdCardFilename = usePdfStore((s) => s.setIdCardFilename);
   const resetCurrentTool = usePdfStore((s) => s.resetCurrentTool);
   const runCompress = usePdfStore((s) => s.runCompress);
   const runOrganize = usePdfStore((s) => s.runOrganize);
@@ -119,6 +146,7 @@ export function PdfWorkspace() {
   const runWatermark = usePdfStore((s) => s.runWatermark);
   const runImagesToPdf = usePdfStore((s) => s.runImagesToPdf);
   const runPdfToImages = usePdfStore((s) => s.runPdfToImages);
+  const runIdCardSheet = usePdfStore((s) => s.runIdCardSheet);
 
   const setRoute = useAppStore((s) => s.setRoute);
   const tasks = useTaskStore((s) => s.tasks);
@@ -182,7 +210,7 @@ export function PdfWorkspace() {
   // Render active PDF page preview with strict original aspect ratio
   useEffect(() => {
     const canvas = canvasRef.current;
-    if (tool === 'image-to-pdf' || tool === 'organize' || !activeSession || !canvas) return;
+    if (tool === 'image-to-pdf' || tool === 'id-card' || tool === 'organize' || !activeSession || !canvas) return;
     const controller = new AbortController();
     activeSession
       .renderPage(currentPage, canvas, { maxWidth: 1100, maxHeight: 1400, signal: controller.signal })
@@ -274,23 +302,68 @@ export function PdfWorkspace() {
     }
   }, [tool, activeSession, currentPage, watermark, comparingOriginal, pageRenderSeq]);
 
+  // Image-to-PDF and the ID card sheet share one image rail; only the data and the wording differ.
+  const imageRail =
+    tool === 'id-card'
+      ? {
+          title: `证件照片（${idImages.length}/${ID_CARD_SIDES.length}）`,
+          hint: '第 1 张正面 · 第 2 张反面',
+          items: idImages,
+          itemLabel: (idx: number) => `${ID_CARD_SIDES[idx] ?? idx + 1} · `,
+          openSlots: ID_CARD_SIDES.slice(idImages.length),
+          emptyText: '',
+          clearLabel: `清空证件照片（${idImages.length}）`,
+          onMove: moveIdImage,
+          onRemove: removeIdImage,
+          onClear: clearIdImages
+        }
+      : tool === 'image-to-pdf'
+        ? {
+            title: `图片队列（${pdfImages.length}）`,
+            hint: '每张图片生成一页',
+            items: pdfImages,
+            itemLabel: (idx: number) => `${idx + 1}. `,
+            openSlots: null,
+            emptyText: '点击上方「添加」或直接拖入图片',
+            clearLabel: `清空图片（${pdfImages.length}）`,
+            onMove: movePdfImage,
+            onRemove: removePdfImage,
+            onClear: clearPdfImages
+          }
+        : null;
+
+  const idSheetLayout =
+    tool === 'id-card' && idImages.length
+      ? getEngine().IdCardSheet.layoutFor(
+          idImages.map((i) => i.decoded.dimensions),
+          idCardSheetOptions(idCard)
+        )
+      : null;
+  const idSheetHint = !idSheetLayout
+    ? '添加证件照片后，这里会显示实际打印尺寸。'
+    : idSheetLayout.shrunk
+      ? '照片偏高，已等比缩小以放进 A4。'
+      : idCard.sizeMode === 'card'
+        ? '先把照片裁到证件边缘，打印出来才是 1:1 实际大小。'
+        : '';
+
   const sourcesRail =
-    tool === 'image-to-pdf' ? (
+    imageRail ? (
       <div className="flex min-h-0 flex-1 flex-col">
         <div className="flex items-center justify-between border-b px-3 py-2.5" style={{ borderColor: 'var(--line)' }}>
           <div>
             <p className="text-[13px] font-bold" style={{ color: 'var(--ink)' }}>
-              图片队列（{pdfImages.length}）
+              {imageRail.title}
             </p>
             <p className="text-[12px]" style={{ color: 'var(--muted)' }}>
-              每张图片生成一页
+              {imageRail.hint}
             </p>
           </div>
           <button
             type="button"
             onClick={() => imgInputRef.current?.click()}
-            disabled={importing}
-            className="inline-flex h-7 items-center gap-1 rounded-full border px-2.5 text-[13px] font-semibold"
+            disabled={(tool === 'id-card' ? idImagesImporting : importing) || imageRail.openSlots?.length === 0}
+            className="inline-flex h-7 items-center gap-1 rounded-full border px-2.5 text-[13px] font-semibold disabled:opacity-40"
             style={{ background: 'var(--accent-soft)', borderColor: 'var(--accent-border)', color: 'var(--accent)' }}
           >
             <ImagePlus className="h-3.5 w-3.5" />
@@ -299,7 +372,7 @@ export function PdfWorkspace() {
         </div>
 
         <div className="flex-1 space-y-2 overflow-y-auto p-2">
-          {pdfImages.map((img, idx) => (
+          {imageRail.items.map((img, idx) => (
             <div
               key={img.id}
               className="flex items-center gap-1.5 rounded-xl border p-1.5"
@@ -308,7 +381,8 @@ export function PdfWorkspace() {
               <img src={img.decoded.preview.url} alt="" className="h-10 w-10 shrink-0 rounded-lg object-cover" />
               <div className="min-w-0 flex-1">
                 <p className="truncate text-[12.5px] font-semibold" style={{ color: 'var(--ink)' }}>
-                  {idx + 1}. {img.name}
+                  {imageRail.itemLabel(idx)}
+                  {img.name}
                 </p>
                 <p className="font-mono text-[11.5px]" style={{ color: 'var(--muted)' }}>
                   {formatBytes(img.size)}
@@ -319,7 +393,7 @@ export function PdfWorkspace() {
                   <button
                     type="button"
                     disabled={idx === 0}
-                    onClick={() => movePdfImage(img.id, -1)}
+                    onClick={() => imageRail.onMove(img.id, -1)}
                     className="grid h-4 w-4 place-items-center rounded border disabled:opacity-25"
                     style={{ borderColor: 'var(--line)', color: 'var(--ink-2)' }}
                   >
@@ -327,8 +401,8 @@ export function PdfWorkspace() {
                   </button>
                   <button
                     type="button"
-                    disabled={idx === pdfImages.length - 1}
-                    onClick={() => movePdfImage(img.id, 1)}
+                    disabled={idx === imageRail.items.length - 1}
+                    onClick={() => imageRail.onMove(img.id, 1)}
                     className="grid h-4 w-4 place-items-center rounded border disabled:opacity-25"
                     style={{ borderColor: 'var(--line)', color: 'var(--ink-2)' }}
                   >
@@ -337,7 +411,7 @@ export function PdfWorkspace() {
                 </div>
                 <button
                   type="button"
-                  onClick={() => removePdfImage(img.id)}
+                  onClick={() => imageRail.onRemove(img.id)}
                   className="grid h-4 w-full place-items-center opacity-60 hover:opacity-100"
                   style={{ color: 'var(--danger)' }}
                 >
@@ -346,22 +420,34 @@ export function PdfWorkspace() {
               </div>
             </div>
           ))}
-          {!pdfImages.length && (
+          {imageRail.openSlots?.map((side) => (
+            <button
+              key={side}
+              type="button"
+              onClick={() => imgInputRef.current?.click()}
+              disabled={importing}
+              className="studio-slot flex h-[54px] w-full items-center justify-center gap-1.5 rounded-xl border border-dashed text-[12.5px] font-semibold disabled:opacity-40"
+            >
+              <ImagePlus className="h-3.5 w-3.5" />
+              <span>添加{side}</span>
+            </button>
+          ))}
+          {!imageRail.items.length && imageRail.emptyText && (
             <div className="py-10 text-center text-[13px]" style={{ color: 'var(--muted)' }}>
-              点击上方「添加」或直接拖入图片
+              {imageRail.emptyText}
             </div>
           )}
         </div>
 
-        {pdfImages.length > 0 && (
+        {(imageRail.items.length > 0 || (tool === 'id-card' && idImagesImporting)) && (
           <div className="border-t p-2" style={{ borderColor: 'var(--line)' }}>
             <button
               type="button"
-              onClick={clearPdfImages}
+              onClick={imageRail.onClear}
               className="w-full rounded-lg py-1.5 text-[13px] font-semibold"
               style={{ background: 'var(--danger-soft)', color: 'var(--danger)' }}
             >
-              清空图片（{pdfImages.length}）
+              {tool === 'id-card' && idImagesImporting ? '取消导入并清空证件照片' : imageRail.clearLabel}
             </button>
           </div>
         )}
@@ -522,7 +608,31 @@ export function PdfWorkspace() {
           ))}
         </div>
       )
-    ) : !activeSession ? (
+    ) : tool === 'id-card' && !idImages.length ? (
+      <div className="flex flex-1 flex-col items-center justify-center p-8 text-center">
+        <div
+          className="mb-4 grid h-14 w-14 place-items-center rounded-2xl border"
+          style={{ background: 'var(--accent-soft)', borderColor: 'var(--accent-border)', color: 'var(--accent)' }}
+        >
+          <IdCard className="h-7 w-7" />
+        </div>
+        <h2 className="text-[18px] font-bold" style={{ color: 'var(--ink)' }}>
+          导入证件照片合成 A4
+        </h2>
+        <p className="mt-1.5 max-w-sm text-[13px]" style={{ color: 'var(--muted)' }}>
+          身份证、银行卡等正反两面按真实尺寸排进一张 A4，可叠加防盗用水印后导出 PDF 打印。
+        </p>
+        <button
+          type="button"
+          onClick={() => imgInputRef.current?.click()}
+          disabled={importing}
+          className="gemini-btn mt-5 inline-flex h-10 items-center gap-2 rounded-full px-5 text-[13.5px] font-semibold"
+        >
+          <ImagePlus className="h-4 w-4" />
+          <span>选择证件照片</span>
+        </button>
+      </div>
+    ) : tool !== 'id-card' && !activeSession ? (
       <div className="flex flex-1 flex-col items-center justify-center p-8 text-center">
         <div
           className="mb-4 grid h-14 w-14 place-items-center rounded-2xl border"
@@ -546,7 +656,7 @@ export function PdfWorkspace() {
           <span>{importing ? '正在加载 PDF 引擎…' : '选择 PDF 文件'}</span>
         </button>
       </div>
-    ) : tool === 'organize' ? (
+    ) : tool === 'organize' && activeSession ? (
       <PdfOrganizeStage session={activeSession} plan={activePlan} />
     ) : (
       <>
@@ -583,18 +693,24 @@ export function PdfWorkspace() {
             }`}
             style={{ transform: `translate3d(${pan.x}px, ${pan.y}px, 0) scale(${zoom})` }}
           >
-            <canvas
-              ref={canvasRef}
-              className="block h-auto max-h-[calc(100dvh-236px)] w-auto max-w-full rounded bg-white object-contain"
-              style={{ boxShadow: '0 12px 36px rgba(15, 23, 42, 0.2), 0 0 0 1px rgba(15, 23, 42, 0.08)' }}
-            />
-            <canvas
-              ref={overlayRef}
-              aria-hidden="true"
-              className={`pointer-events-none absolute inset-0 h-full w-full rounded ${
-                tool === 'watermark' && !comparingOriginal ? 'opacity-100' : 'opacity-0'
-              }`}
-            />
+            {tool === 'id-card' ? (
+              <PdfIdCardSheet images={idImages} config={idCard} />
+            ) : (
+              <>
+                <canvas
+                  ref={canvasRef}
+                  className="block h-auto max-h-[calc(100dvh-236px)] w-auto max-w-full rounded bg-white object-contain"
+                  style={{ boxShadow: '0 12px 36px rgba(15, 23, 42, 0.2), 0 0 0 1px rgba(15, 23, 42, 0.08)' }}
+                />
+                <canvas
+                  ref={overlayRef}
+                  aria-hidden="true"
+                  className={`pointer-events-none absolute inset-0 h-full w-full rounded ${
+                    tool === 'watermark' && !comparingOriginal ? 'opacity-100' : 'opacity-0'
+                  }`}
+                />
+              </>
+            )}
           </div>
         </div>
 
@@ -607,27 +723,35 @@ export function PdfWorkspace() {
               boxShadow: 'var(--shadow-float)'
             }}
           >
-            <button
-              type="button"
-              disabled={currentPage <= 1}
-              onClick={() => setPage(currentPage - 1)}
-              className="grid h-6 w-6 place-items-center rounded-full disabled:opacity-30"
-              style={{ color: 'var(--ink-2)' }}
-            >
-              <ChevronLeft className="h-4 w-4" />
-            </button>
-            <span className="font-mono text-[13px] font-semibold tabular-nums" style={{ color: 'var(--ink)' }}>
-              {currentPage} / {activeSession.numPages}
-            </span>
-            <button
-              type="button"
-              disabled={currentPage >= activeSession.numPages}
-              onClick={() => setPage(currentPage + 1)}
-              className="grid h-6 w-6 place-items-center rounded-full disabled:opacity-30"
-              style={{ color: 'var(--ink-2)' }}
-            >
-              <ChevronRight className="h-4 w-4" />
-            </button>
+            {tool !== 'id-card' && activeSession ? (
+              <>
+                <button
+                  type="button"
+                  disabled={currentPage <= 1}
+                  onClick={() => setPage(currentPage - 1)}
+                  className="grid h-6 w-6 place-items-center rounded-full disabled:opacity-30"
+                  style={{ color: 'var(--ink-2)' }}
+                >
+                  <ChevronLeft className="h-4 w-4" />
+                </button>
+                <span className="font-mono text-[13px] font-semibold tabular-nums" style={{ color: 'var(--ink)' }}>
+                  {currentPage} / {activeSession.numPages}
+                </span>
+                <button
+                  type="button"
+                  disabled={currentPage >= activeSession.numPages}
+                  onClick={() => setPage(currentPage + 1)}
+                  className="grid h-6 w-6 place-items-center rounded-full disabled:opacity-30"
+                  style={{ color: 'var(--ink-2)' }}
+                >
+                  <ChevronRight className="h-4 w-4" />
+                </button>
+              </>
+            ) : (
+              <span className="px-1 font-mono text-[13px] font-semibold tabular-nums" style={{ color: 'var(--ink)' }}>
+                A4 · 210 × 297 mm
+              </span>
+            )}
 
             {tool === 'watermark' && (
               <>
@@ -1113,6 +1237,210 @@ export function PdfWorkspace() {
         </div>
       )}
 
+      {tool === 'id-card' && (
+        <div className="space-y-2.5">
+          <label className="block text-[13px] font-semibold" style={{ color: 'var(--ink-2)' }}>
+            证件尺寸
+            <select
+              value={idCard.sizeMode}
+              onChange={(e) => patchIdCard({ sizeMode: e.target.value as typeof idCard.sizeMode })}
+              className="mt-1 h-8 w-full rounded-lg border px-2 text-[13px]"
+              style={{ background: 'var(--bg-surface)', borderColor: 'var(--line-strong)', color: 'var(--ink)' }}
+            >
+              {ID_CARD_SIZES.map((s) => (
+                <option key={s.id} value={s.id}>
+                  {s.label}
+                </option>
+              ))}
+            </select>
+          </label>
+          <div className={`grid gap-2 ${idCard.sizeMode === 'custom' ? 'grid-cols-2' : 'grid-cols-1'}`}>
+            {idCard.sizeMode === 'custom' && (
+              <label className="block text-[13px] font-semibold" style={{ color: 'var(--ink-2)' }}>
+                证件宽度 (mm)
+                <NumericInput
+                  min={30}
+                  max={186}
+                  fallback={120}
+                  value={idCard.customWidthMm}
+                  onCommit={(v) => patchIdCard({ customWidthMm: v })}
+                  className="mt-1 h-8 w-full rounded-lg border px-2 font-mono text-[13px]"
+                />
+              </label>
+            )}
+            <label className="block text-[13px] font-semibold" style={{ color: 'var(--ink-2)' }}>
+              正反面间距 (mm)
+              <NumericInput
+                min={0}
+                max={80}
+                fallback={20}
+                value={idCard.gapMm}
+                onCommit={(v) => patchIdCard({ gapMm: v })}
+                className="mt-1 h-8 w-full rounded-lg border px-2 font-mono text-[13px]"
+              />
+            </label>
+          </div>
+
+          <div className="space-y-1 rounded-xl border p-2.5 text-[12.5px] leading-relaxed" style={{ background: 'var(--bg-subtle)', borderColor: 'var(--line)', color: 'var(--muted)' }}>
+            {idSheetLayout?.cards.map((card, idx) => (
+              <div key={ID_CARD_SIDES[idx]} className="flex justify-between">
+                <span>{ID_CARD_SIDES[idx]}打印尺寸</span>
+                <span className="font-mono font-semibold" style={{ color: 'var(--ink)' }}>
+                  {card.width.toFixed(1)} × {card.height.toFixed(1)} mm
+                </span>
+              </div>
+            ))}
+            {idSheetHint && <p>{idSheetHint}</p>}
+          </div>
+
+          <label className="flex cursor-pointer items-center justify-between rounded-xl border px-3 py-2" style={{ background: 'var(--bg-subtle)', borderColor: 'var(--line)' }}>
+            <span className="text-[13px] font-semibold" style={{ color: 'var(--ink-2)' }}>
+              叠加防盗用水印
+            </span>
+            <input
+              type="checkbox"
+              checked={idCard.watermark}
+              onChange={(e) => patchIdCard({ watermark: e.target.checked })}
+              className="h-4 w-4 accent-blue-600"
+            />
+          </label>
+
+          {idCard.watermark && (
+            <>
+              <div>
+                <textarea
+                  rows={2}
+                  value={idCard.text}
+                  maxLength={getEngine().IdCardSheet.MAX_WATERMARK_CHARS}
+                  aria-invalid={idCardWatermarkMissing}
+                  aria-describedby={idCardWatermarkMissing ? 'id-card-watermark-hint' : undefined}
+                  onChange={(e) => patchIdCard({ text: e.target.value })}
+                  placeholder="输入水印文字，如：仅供办理入职使用"
+                  className="w-full rounded-lg border px-2.5 py-1.5 text-[13.5px]"
+                  style={{ background: 'var(--bg-surface)', borderColor: 'var(--line-strong)', color: 'var(--ink)' }}
+                />
+                {idCardWatermarkMissing && (
+                  <p id="id-card-watermark-hint" className="text-[12px]" style={{ color: 'var(--danger)' }}>
+                    请填写水印文字，或关闭水印后再导出。
+                  </p>
+                )}
+                <div className="mt-1.5 flex flex-wrap gap-1.5">
+                  {ID_CARD_WM_CHIPS.map((c) => (
+                    <button
+                      key={c.label}
+                      type="button"
+                      onClick={() => patchIdCard({ text: c.text })}
+                      className="h-6 rounded-full border px-2.5 text-[12px] font-semibold"
+                      style={{ background: 'var(--bg-subtle)', borderColor: 'var(--line)', color: 'var(--ink-2)' }}
+                    >
+                      {c.label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              <div className="flex items-center justify-between">
+                <span className="text-[13px] font-semibold" style={{ color: 'var(--ink-2)' }}>
+                  颜色
+                </span>
+                <div className="flex items-center gap-1.5">
+                  <input
+                    type="color"
+                    value={idCard.color}
+                    onChange={(e) => patchIdCard({ color: e.target.value })}
+                    className="h-6 w-8 cursor-pointer rounded border p-0.5"
+                    style={{ borderColor: 'var(--line-strong)' }}
+                  />
+                  {PDF_WM_SWATCHES.map((sw) => (
+                    <button
+                      key={sw}
+                      type="button"
+                      onClick={() => patchIdCard({ color: sw })}
+                      className="h-4.5 w-4.5 rounded-full border"
+                      style={{
+                        background: sw,
+                        borderColor: idCard.color.toLowerCase() === sw ? 'var(--accent)' : 'var(--line-strong)'
+                      }}
+                    />
+                  ))}
+                </div>
+              </div>
+
+              <div className="grid grid-cols-2 gap-1 rounded-xl p-1" style={{ background: 'var(--bg-well)' }}>
+                {(
+                  [
+                    ['cards', '仅盖在证件上'],
+                    ['page', '铺满整页']
+                  ] as const
+                ).map(([scope, label]) => (
+                  <button
+                    key={scope}
+                    type="button"
+                    onClick={() => patchIdCard({ scope })}
+                    className="h-7 rounded-lg text-[13px] font-semibold"
+                    style={{
+                      background: idCard.scope === scope ? 'var(--bg-surface)' : 'transparent',
+                      color: idCard.scope === scope ? 'var(--accent)' : 'var(--muted)'
+                    }}
+                  >
+                    {label}
+                  </button>
+                ))}
+              </div>
+
+              <label className="block text-[13px] font-semibold" style={{ color: 'var(--ink-2)' }}>
+                <div className="flex justify-between">
+                  <span>透明度</span>
+                  <span className="font-mono" style={{ color: 'var(--accent)' }}>
+                    {idCard.opacity}%
+                  </span>
+                </div>
+                <input
+                  type="range"
+                  min={5}
+                  max={100}
+                  value={idCard.opacity}
+                  onChange={(e) => patchIdCard({ opacity: Number(e.target.value) })}
+                  className="w-full"
+                />
+              </label>
+              <label className="block text-[13px] font-semibold" style={{ color: 'var(--ink-2)' }}>
+                <div className="flex justify-between">
+                  <span>旋转角度</span>
+                  <span className="font-mono" style={{ color: 'var(--accent)' }}>
+                    {idCard.rotation}°
+                  </span>
+                </div>
+                <input
+                  type="range"
+                  min={-90}
+                  max={90}
+                  value={idCard.rotation}
+                  onChange={(e) => patchIdCard({ rotation: Number(e.target.value) })}
+                  className="w-full"
+                />
+              </label>
+              <label className="block text-[13px] font-semibold" style={{ color: 'var(--ink-2)' }}>
+                <div className="flex justify-between">
+                  <span>字号</span>
+                  <span className="font-mono" style={{ color: 'var(--accent)' }}>
+                    {idCard.fontPt} pt
+                  </span>
+                </div>
+                <input
+                  type="range"
+                  min={6}
+                  max={28}
+                  value={idCard.fontPt}
+                  onChange={(e) => patchIdCard({ fontPt: Number(e.target.value) })}
+                  className="w-full"
+                />
+              </label>
+            </>
+          )}
+        </div>
+      )}
+
       <div
         className="flex gap-2 rounded-xl border p-2.5 text-[12.5px] leading-relaxed"
         style={{ background: 'var(--accent-soft)', borderColor: 'var(--accent-border)', color: 'var(--ink-2)' }}
@@ -1195,6 +1523,16 @@ export function PdfWorkspace() {
         onRun: runImagesToPdf
       };
     }
+    if (tool === 'id-card') {
+      return {
+        filename: idCardFilename,
+        onFilename: setIdCardFilename,
+        placeholder: '输出文件名（默认：证件复印件.pdf）',
+        disabled: !idImages.length || idImagesImporting || idCardWatermarkMissing || pdfTaskRunning,
+        label: pdfTaskRunning ? '后台处理中…' : idImagesImporting ? '正在导入证件照片…' : '合成 A4 并下载 PDF',
+        onRun: runIdCardSheet
+      };
+    }
     return {
       filename: pdfToImage.filename,
       onFilename: (v: string) => patchPdfToImage({ filename: v }),
@@ -1249,7 +1587,7 @@ export function PdfWorkspace() {
         multiple
         hidden
         onChange={(e) => {
-          if (e.target.files?.length) importPdfImages(e.target.files);
+          if (e.target.files?.length) (tool === 'id-card' ? importIdImages : importPdfImages)(e.target.files);
           e.target.value = '';
         }}
       />

@@ -346,7 +346,8 @@ const processSingleItem = async (
       dimensions: dims,
       type: mime,
       quality,
-      background: state.exportConfig.background,
+      // Fill only when the chosen output is JPG; PNG / WebP keep their alpha channel
+      background: state.exportConfig.format === 'image/jpeg' ? state.exportConfig.background : undefined,
       scope,
       signal
     });

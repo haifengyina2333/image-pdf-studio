@@ -68,3 +68,37 @@ npm run build:release
 - **Cloudflare Pages / Netlify**：直接拖入 `dist/` 文件夹即可上线，已内置 `_headers` 自动启用 `/assets/*` 永久强缓存。
 - **Vercel / GitHub Pages / Nginx**：构建命令填 `npm run build`，输出目录填 `dist`，零后端依赖。
 - **离线分发**：直接发送 `图片PDF工作台-v2.0-离线单文件.html`，双击即可在 Chrome / Edge / Safari 离线运行全部 16 个工具（含本地 AI 人脸打码与 PDF 引擎）。
+
+---
+
+## 未来功能规划（Roadmap · v2.1+）
+
+- [ ] **PDF 电子签名 / 盖红章**：支持手写画板签名或上传透明公章/私章，直接在 PDF 预览页上拖拽到落款位置并自由缩放导出（复用现有 `pdf-lib`，零新增依赖，适合报销单与合同签字）。
+- [ ] **证件正反面合成 A4（顺手加水印）**：将身份证、营业执照等正反面两张图一键按真实比例居中排入标准 A4 纸，支持直接叠加「仅供办理＿＿使用，他用无效」水印并导出 PDF 打印。
+- [ ] **工程化演进（按需）**：将 `ImageWorkspace.tsx` 拆分为可插拔的工具注册表模块，并把无头 Chrome 端到端回归脚本接入 CI。
+
+---
+
+## 开发与重构踩坑复盘（Pitfalls & Notes）
+
+记录从 v0.30.0 原生单文件迁移到 React 19 Studio v2.0 过程中实际踩过并彻底解决的关键问题，避免后续二次踩坑：
+
+1. **Zustand v5 + React 19 无限渲染白屏**
+   - 现象：在 `useStore((s) => s.tasks.filter(...))` 里直接返回新数组会触发 `useSyncExternalStore` 无限重渲染。
+   - 规范：selector 永远只取原始引用或基础类型，过滤与派生计算放在组件体内或 `useMemo` 中完成。
+2. **底层引擎接口签名与量纲差异**
+   - `CompressionModel.profiles` 的质量是百分制（`90 / 82 / 70`），而 `canvas.toBlob` 要求 `0–1`（传入大于 1 会被浏览器静默回退为 `0.92`，导致压缩失效）。
+   - `PageRange.parseSplitGroups()` 返回的是 `{ label, pages }[]` 对象数组，而非 `number[][]`。
+   - `ImageStitcher.layoutFor()` 返回的槽位图片挂载在 `slot.image` 下；`ImageDecoder` 需完整走 `ResourceScope → normalizeFile → decodeBitmap → createPreview` 生命周期。
+3. **PDF 预览比例被压扁**
+   - `pdf-runtime.js` 的 `renderPage()` 会给 `<canvas>` 写入固定内联 `style.width / height`，与外层自适应容器冲突。渲染完成后需清空内联宽高，由 CSS `w-auto h-auto max-w-full object-contain` 严格锁定原比例。
+4. **浏览器剪贴板写入 JPG 限制 & `Number(null)` 陷阱**
+   - 实测 Chrome / Edge / Safari 中 `ClipboardItem.supports('image/jpeg')` 为 `false`，裸写 `image/jpeg` 会直接抛错。因此在「JPG 优先」模式下采用混合写入：支持原生 JPG 时直写，否则以轻量 JPG 写入 `text/html`（供 Word/邮件/文档使用）并附带兼容 `image/png`（保证微信/QQ 粘贴不失败）。
+   - 读取 `localStorage` 时 `Number(null) === 0`，若 `0` 也是合法选项（如“原始尺寸不缩放”），必须先显式判断 `saved === null` 再做数值转换。
+5. **受控数字输入框无法清空重输**
+   - 直接在 `onChange` 中用 `Math.max(min, Number(val) || fallback)` 强钳制会导致清空第一位数字时立刻回弹。改为草稿缓冲组件 `NumericInput`，允许自由删除与键入，在 `onBlur` / `Enter` 时统一校验提交。
+6. **布局、Hover 与离线单文件打包细节**
+   - Flex 子元素 `flex-1` 若缺少 `min-w-0`，超长按钮文案（如 `4800×3200`）会直接撑破右侧面板边界。
+   - Tailwind v4 默认移除了 `<button>` 的 `cursor: pointer`，且行内 `style` 优先级高于 Hover 工具类；交互控件需通过语义 CSS 类 + CSS 变量统一管理浅/深色 Hover。
+   - `file://` 离线单文件版不可使用外链 ES Module 或相对 `fetch()`：需通过 `vite.single.config.ts` 打成经典 IIFE 脚本，并将 `pdf.worker` 与 MediaPipe WASM / `.tflite` / `.task` 模型以 Base64 内嵌，运行时按需解码为 Blob URL / `Uint8Array` 后立即释放原始字符串。
+
